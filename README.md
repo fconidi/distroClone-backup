@@ -1,4 +1,6 @@
+
 # DistroClone Backup and Restore
+
 
 
 <img width="256" height="272" alt="dcb-logo" src="https://github.com/user-attachments/assets/ea61af26-e79f-4e86-b60e-7a22a8bd31ab" />
@@ -113,7 +115,7 @@ Point it to an external USB drive or an NFS mount for offsite protection.
 The subfolder .rootfs_cache is created automatically.
 
 
-<img width="642" height="378" alt="dcb-setting" src="https://github.com/user-attachments/assets/79bef7d9-8ae3-4598-8cfc-f1871494f5c8" />
+<img width="627" height="355" alt="dcb-setting" src="https://github.com/user-attachments/assets/b6e853ab-a10f-4af7-a50c-13b2d55ad1be" />
 
 
 
@@ -131,7 +133,9 @@ depending on system size.
 
 
 
-<img width="502" height="289" alt="dcb-full" src="https://github.com/user-attachments/assets/7f6e643e-9c0a-4cce-b6aa-7cd2d61ba2e1" />
+<img width="480" height="270" alt="dcb-full" src="https://github.com/user-attachments/assets/5fae6048-0b92-4524-8434-9a813a7e7784" />
+
+
 
 
 A full backup is required before incremental backups can be used.
@@ -146,7 +150,9 @@ Click Schedule Backup and choose:
 - Desktop notification on completion (optional)
 
 
-<img width="562" height="509" alt="dcb-cron" src="https://github.com/user-attachments/assets/80fde893-398c-44c9-aac9-eb999f854fda" />
+
+<img width="540" height="487" alt="dcb-cron" src="https://github.com/user-attachments/assets/3dad565f-f634-44af-a35f-99101bd76776" />
+
 
 
 
@@ -165,7 +171,9 @@ Click Restore System. The confirmation dialog shows:
 - Protected paths: /home, /root, /boot/efi
 
 
-<img width="542" height="575" alt="dcb-restore" src="https://github.com/user-attachments/assets/96e8001d-33d3-461a-b89d-d01e8fb8742b" />
+
+<img width="522" height="556" alt="dcb-restore" src="https://github.com/user-attachments/assets/f32ffbaa-bd44-485c-8256-ea0730100255" />
+
 
 
 

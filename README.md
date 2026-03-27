@@ -7,7 +7,8 @@
 ![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu%20%7C%20Mint%20%7C%20LMDE-purple)
 ![Languages](https://img.shields.io/badge/languages-EN%20IT%20DE%20FR%20ES-orange)
 
----<img width="128" height="136" alt="distroclone-bkp-logo" src="https://github.com/user-attachments/assets/56772e98-77e4-4b32-9053-b7f197855c24" />
+
+<img width="128" height="136" alt="distroclone-bkp-logo" src="https://github.com/user-attachments/assets/56772e98-77e4-4b32-9053-b7f197855c24" />
 
 
 ## What is DistroClone Backup?
@@ -59,10 +60,10 @@ It was designed as the **companion to DistroClone** (the live ISO builder), but 
 
 ### Step 1 — Download the .deb package
 
-Grab the latest release from the GitHub releases page or from [syslinuxos.com](https://www.syslinuxos.com):
+Grab the latest release from the GitHub releases page or from [edmond's weblog](https://www.francoconidi.it):
 
 ```bash
-wget https://github.com/francoconidi/distroclone-tools/releases/download/v1.2/distroclone-backup_1.2_all.deb
+wget https://github.com/fconidi/distroclone-tools/releases/download/v1.2/distroclone-backup_1.2_all.deb
 ```
 
 ---

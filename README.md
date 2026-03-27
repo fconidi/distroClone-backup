@@ -63,7 +63,7 @@ It was designed as the **companion to DistroClone** (the live ISO builder), but 
 Grab the latest release from the GitHub releases page or from [edmond's weblog](https://www.francoconidi.it):
 
 ```bash
-wget https://github.com/fconidi/distroclone-tools/releases/download/v1.2/distroclone-backup_1.2_all.deb
+wget https://github.com/fconidi/distroClone-backup/releases/download/v1.2/distroclone-backup_1.2_all.deb
 ```
 
 ---

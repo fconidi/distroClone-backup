@@ -1,0 +1,6 @@
+# Package trees and built .deb files
+distroClone*/
+*.deb
+
+# WordPress draft
+README-wordpress.md

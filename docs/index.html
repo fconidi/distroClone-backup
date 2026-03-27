@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DistroClone Backup &amp; Restore</title>
+  <style>
+    /* ── Design tokens ─────────────────────────────────────── */
+    :root[data-theme="dark"] {
+      --bg:          #0d1117;
+      --surface:     #161b22;
+      --surface2:    #21262d;
+      --border:      #30363d;
+      --text:        #e6edf3;
+      --text-muted:  #8b949e;
+      --accent:      #58a6ff;
+      --accent2:     #3fb950;
+      --accent3:     #d2a8ff;
+      --warn:        #f0883e;
+      --danger:      #ff7b72;
+      --badge-bg:    #1f6feb33;
+      --badge-text:  #58a6ff;
+      --shadow:      0 8px 32px rgba(0,0,0,.45);
+      --step-num:    #58a6ff;
+    }
+    :root[data-theme="light"] {
+      --bg:          #f6f8fa;
+      --surface:     #ffffff;
+      --surface2:    #f0f3f6;
+      --border:      #d0d7de;
+      --text:        #1f2328;
+      --text-muted:  #57606a;
+      --accent:      #0969da;
+      --accent2:     #1a7f37;
+      --accent3:     #8250df;
+      --warn:        #bc4c00;
+      --danger:      #cf222e;
+      --badge-bg:    #ddf4ff;
+      --badge-text:  #0969da;
+      --shadow:      0 4px 16px rgba(0,0,0,.1);
+      --step-num:    #0969da;
+    }
+
+    /* ── Reset & base ──────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      transition: background .25s, color .25s;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: .875em;
+    }
+    pre {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      overflow-x: auto;
+      font-size: .875rem;
+      line-height: 1.6;
+    }
+    pre code { background: none; border: none; padding: 0; font-size: inherit; }
+
+    /* ── Layout ────────────────────────────────────────────── */
+    .container { max-width: 900px; margin: 0 auto; padding: 0 1.5rem; }
+
+    /* ── Top bar ───────────────────────────────────────────── */
+    .topbar {
+      position: sticky; top: 0; z-index: 100;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: .65rem 0;
+      backdrop-filter: blur(8px);
+    }
+    .topbar-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 1rem;
+    }
+    .topbar-brand {
+      display: flex; align-items: center; gap: .6rem;
+      font-weight: 700; font-size: 1rem;
+    }
+    .topbar-brand .icon { width: 28px; height: 28px; vertical-align: middle; }
+    .topbar-nav { display: flex; gap: 1.5rem; font-size: .9rem; }
+    .topbar-nav a { color: var(--text-muted); transition: color .2s; }
+    .topbar-nav a:hover { color: var(--accent); text-decoration: none; }
+
+    /* theme toggle */
+    .theme-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: .35rem .75rem;
+      cursor: pointer;
+      color: var(--text);
+      font-size: .85rem;
+      display: flex; align-items: center; gap: .4rem;
+      transition: background .2s, border-color .2s;
+    }
+    .theme-btn:hover { background: var(--border); }
+
+    /* ── Hero ──────────────────────────────────────────────── */
+    .hero {
+      text-align: center;
+      padding: 5rem 1rem 3.5rem;
+      background: radial-gradient(ellipse 80% 60% at 50% -10%,
+        rgba(88,166,255,.12) 0%, transparent 70%);
+    }
+    [data-theme="light"] .hero {
+      background: radial-gradient(ellipse 80% 60% at 50% -10%,
+        rgba(9,105,218,.08) 0%, transparent 70%);
+    }
+    .hero-logo {
+      width: 120px;
+      height: 120px;
+      display: block;
+      margin: 0 auto .75rem;
+      filter: drop-shadow(0 0 24px rgba(34,197,94,.5));
+      transition: filter .3s, transform .3s;
+    }
+    .hero-logo:hover {
+      transform: scale(1.06) rotate(-3deg);
+      filter: drop-shadow(0 0 36px rgba(34,197,94,.75));
+    }
+    [data-theme="light"] .hero-logo { filter: drop-shadow(0 0 18px rgba(22,163,74,.35)); }
+    .hero h1 {
+      font-size: clamp(1.8rem, 5vw, 2.8rem);
+      font-weight: 800;
+      letter-spacing: -.5px;
+      margin-bottom: .5rem;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero-subtitle {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      max-width: 600px;
+      margin: 0 auto 1.75rem;
+    }
+    .badge-row {
+      display: flex; flex-wrap: wrap; justify-content: center; gap: .5rem;
+      margin-bottom: 2rem;
+    }
+    .badge {
+      background: var(--badge-bg);
+      color: var(--badge-text);
+      border: 1px solid var(--accent);
+      border-radius: 20px;
+      padding: .2rem .75rem;
+      font-size: .78rem;
+      font-weight: 600;
+    }
+    .badge.green  { background: rgba(63,185,80,.12); color: var(--accent2); border-color: var(--accent2); }
+    .badge.purple { background: rgba(210,168,255,.12); color: var(--accent3); border-color: var(--accent3); }
+    .badge.orange { background: rgba(240,136,62,.12); color: var(--warn); border-color: var(--warn); }
+    [data-theme="light"] .badge.green  { background: #dafbe1; color: var(--accent2); }
+    [data-theme="light"] .badge.purple { background: #fbefff; color: var(--accent3); }
+    [data-theme="light"] .badge.orange { background: #fff1e5; color: var(--warn); }
+    .btn-group { display: flex; flex-wrap: wrap; justify-content: center; gap: .75rem; }
+    .btn {
+      display: inline-flex; align-items: center; gap: .45rem;
+      border-radius: 8px; padding: .65rem 1.4rem;
+      font-size: .95rem; font-weight: 600;
+      cursor: pointer; border: none; text-decoration: none;
+      transition: transform .15s, filter .15s, box-shadow .15s;
+    }
+    .btn:hover { transform: translateY(-2px); filter: brightness(1.1); text-decoration: none; }
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 4px 14px rgba(88,166,255,.35); }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    [data-theme="light"] .btn-primary { box-shadow: 0 4px 14px rgba(9,105,218,.25); }
+
+    /* ── Sections ──────────────────────────────────────────── */
+    section { padding: 4rem 0; }
+    section + section { border-top: 1px solid var(--border); }
+    .section-label {
+      font-size: .78rem; font-weight: 700; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--accent); margin-bottom: .5rem;
+    }
+    h2 {
+      font-size: 1.75rem; font-weight: 800;
+      letter-spacing: -.3px; margin-bottom: 1.25rem;
+    }
+    h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: .5rem; }
+    p { color: var(--text-muted); margin-bottom: .9rem; }
+
+    /* ── About card ────────────────────────────────────────── */
+    .about-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      box-shadow: var(--shadow);
+    }
+    .about-card p { font-size: 1.05rem; }
+    .tag-line {
+      display: inline-flex; align-items: center; gap: .5rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .5rem 1rem;
+      font-size: .9rem;
+      color: var(--text-muted);
+      margin-top: .75rem;
+    }
+
+    /* ── Feature grid ──────────────────────────────────────── */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 1.25rem;
+    }
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      transition: border-color .2s, transform .2s, box-shadow .2s;
+    }
+    .feature-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-3px);
+      box-shadow: var(--shadow);
+    }
+    .feature-icon { font-size: 2rem; margin-bottom: .75rem; display: block; }
+    .feature-card h3 { font-size: 1rem; color: var(--text); }
+    .feature-card p { font-size: .9rem; margin: 0; }
+
+    /* ── Step guide ────────────────────────────────────────── */
+    .steps { display: flex; flex-direction: column; gap: 0; }
+    .step {
+      display: grid;
+      grid-template-columns: 56px 1fr;
+      gap: 0 1.25rem;
+      position: relative;
+    }
+    .step:not(:last-child) .step-line {
+      position: absolute;
+      left: 27px; top: 52px; bottom: 0;
+      width: 2px;
+      background: var(--border);
+    }
+    .step-num-wrap {
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .step-num {
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      border: 2px solid var(--step-num);
+      color: var(--step-num);
+      font-weight: 800; font-size: .95rem;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      background: var(--surface);
+      position: relative; z-index: 1;
+    }
+    .step-body {
+      padding-bottom: 2rem;
+    }
+    .step-body h3 { margin-bottom: .35rem; font-size: 1.05rem; }
+    .step-body p  { font-size: .93rem; }
+    .step-body pre { margin-top: .6rem; }
+
+    /* ── Dependency table ──────────────────────────────────── */
+    .dep-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .9rem;
+    }
+    .dep-table th, .dep-table td {
+      border: 1px solid var(--border);
+      padding: .65rem 1rem;
+      text-align: left;
+    }
+    .dep-table th {
+      background: var(--surface2);
+      font-weight: 700;
+      color: var(--text);
+    }
+    .dep-table tr:hover td { background: var(--surface2); }
+    .dep-table code { border: none; background: none; padding: 0; }
+    .req { color: var(--accent2); font-weight: 700; }
+    .rec { color: var(--accent); }
+
+    /* ── Distro list ───────────────────────────────────────── */
+    .distro-list {
+      display: flex; flex-wrap: wrap; gap: .6rem;
+      list-style: none;
+    }
+    .distro-list li {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: .3rem 1rem;
+      font-size: .9rem;
+      display: flex; align-items: center; gap: .4rem;
+    }
+
+    /* ── Lang pills ────────────────────────────────────────── */
+    .lang-pills { display: flex; flex-wrap: wrap; gap: .6rem; }
+    .lang-pill {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .5rem 1rem;
+      font-size: .88rem;
+      text-align: center;
+    }
+    .lang-pill .flag { font-size: 1.3rem; display: block; }
+
+    /* ── Alert box ─────────────────────────────────────────── */
+    .alert {
+      border-left: 4px solid var(--accent2);
+      background: rgba(63,185,80,.08);
+      border-radius: 0 8px 8px 0;
+      padding: .9rem 1.1rem;
+      margin: 1rem 0;
+      font-size: .93rem;
+    }
+    .alert.warn {
+      border-color: var(--warn);
+      background: rgba(240,136,62,.08);
+    }
+    [data-theme="light"] .alert { background: #dafbe1; }
+    [data-theme="light"] .alert.warn { background: #fff1e5; }
+
+    /* ── Footer ────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2.5rem 0;
+      text-align: center;
+      font-size: .88rem;
+      color: var(--text-muted);
+    }
+    footer a { color: var(--text-muted); }
+    footer a:hover { color: var(--accent); }
+
+    /* ── Blog dropdown ─────────────────────────────────────── */
+    .dropdown { position: relative; }
+    .dropdown-toggle { cursor: pointer; }
+    .dropdown-menu {
+      display: none;
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      min-width: 200px;
+      z-index: 200;
+      overflow: hidden;
+      animation: fadeDown .18s ease;
+    }
+    @keyframes fadeDown {
+      from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    .dropdown:hover .dropdown-menu,
+    .dropdown:focus-within .dropdown-menu { display: block; }
+    .dropdown-menu a {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      padding: .75rem 1.1rem;
+      color: var(--text);
+      font-size: .92rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: background .15s;
+    }
+    .dropdown-menu a:hover { background: var(--surface2); text-decoration: none; }
+    .dropdown-menu a + a { border-top: 1px solid var(--border); }
+    .dm-icon { font-size: 1.1rem; }
+
+    /* ── Responsive ────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      .topbar-nav { display: none; }
+      .hero { padding: 3.5rem 1rem 2.5rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP BAR ────────────────────────────────────────────────── -->
+<nav class="topbar">
+  <div class="container topbar-inner">
+    <div class="topbar-brand">
+      <img class="icon" src="dcb-logo.png" alt="DCB" />
+      <span>DistroClone Backup</span>
+    </div>
+    <div class="topbar-nav">
+      <a href="#about">About</a>
+      <a href="#features">Features</a>
+      <a href="#guide">Install</a>
+      <a href="#usage">Usage</a>
+      <a href="#deps">Deps</a>
+    </div>
+    <button class="theme-btn" onclick="toggleTheme()" aria-label="Toggle theme">
+      <span id="theme-icon">☀️</span>
+      <span id="theme-label">Light</span>
+    </button>
+  </div>
+</nav>
+
+<!-- ── HERO ───────────────────────────────────────────────────── -->
+<section class="hero" id="top">
+  <div class="container">
+    <img class="hero-logo" src="dcb-logo.png" alt="DistroClone Backup logo" />
+    <h1>DistroClone <span>Backup &amp; Restore</span></h1>
+    <p class="hero-subtitle">
+      Incremental rootfs backup and restore for Debian-based systems.
+      Companion tool to <strong>DistroClone</strong> — keeps your system safe
+      between ISO builds.
+    </p>
+    <div class="badge-row">
+      <span class="badge">v1.2</span>
+      <span class="badge green">GPL-3.0</span>
+      <span class="badge purple">Debian · Ubuntu · Mint · LMDE</span>
+      <span class="badge orange">yad · rsync · btrfs</span>
+      <span class="badge">🌍 5 Languages</span>
+    </div>
+    <div class="btn-group">
+      <a class="btn btn-primary" href="https://github.com/francoconidi/distroclone-tools/releases">
+        ⬇️ Download .deb
+      </a>
+      <a class="btn btn-secondary" href="#guide">
+        📖 Install Guide
+      </a>
+      <div class="dropdown">
+        <button class="btn btn-secondary dropdown-toggle" aria-haspopup="true">
+          🌐 Blog ▾
+        </button>
+        <div class="dropdown-menu">
+          <a href="https://www.syslinuxos.com" target="_blank" rel="noopener">
+            <span class="dm-icon">🖥️</span> syslinuxos.com
+          </a>
+          <a href="https://www.francoconidi.it" target="_blank" rel="noopener">
+            <span class="dm-icon">👤</span> francoconidi.it
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── ABOUT ──────────────────────────────────────────────────── -->
+<section id="about">
+  <div class="container">
+    <div class="section-label">About the project</div>
+    <h2>What is DistroClone Backup?</h2>
+    <div class="about-card">
+      <p>
+        <strong>DistroClone Backup &amp; Restore</strong> is a graphical tool
+        for Debian-based GNU/Linux systems that creates a full or incremental
+        cache of the running <code>rootfs</code> using <code>rsync</code>.
+        The cache can be restored at any time, rolling the system back to a
+        known-good state — while keeping <code>/home</code>, <code>/root</code>
+        and <code>/boot/efi</code> safe.
+      </p>
+      <p>
+        Designed as the companion to
+        <a href="https://www.syslinuxos.com">DistroClone</a> (the live ISO
+        builder), it fills the gap between full ISO snapshots by providing
+        lightweight, scheduled, incremental protection for your daily workflow.
+        A btrfs backend enables versioned snapshots with configurable retention.
+      </p>
+      <div class="tag-line">
+        📦 Package: <code>distroclone-backup</code> &nbsp;|&nbsp;
+        👤 Maintainer: Franco Conidi aka edmond &nbsp;|&nbsp;
+        📧 fconidi@gmail.com
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ───────────────────────────────────────────────── -->
+<section id="features">
+  <div class="container">
+    <div class="section-label">Capabilities</div>
+    <h2>Features</h2>
+    <div class="feature-grid">
+
+      <div class="feature-card">
+        <span class="feature-icon">💾</span>
+        <h3>Full Backup</h3>
+        <p>Clone the entire running filesystem via rsync in one click.
+           Creates the base cache used by incremental runs.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">⚡</span>
+        <h3>Incremental Backup</h3>
+        <p>Only modified files are transferred, keeping subsequent backups
+           fast and storage-efficient.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🔄</span>
+        <h3>Safe System Restore</h3>
+        <p>Rolls back system files from cache. <code>/home</code>,
+           <code>/root</code> and <code>/boot/efi</code> are always
+           protected and never overwritten.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🗓️</span>
+        <h3>Cron Scheduler</h3>
+        <p>Schedule automatic incremental backups — daily, weekly, or
+           monthly — directly from the GUI. No manual crontab editing.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">📸</span>
+        <h3>Btrfs Snapshots</h3>
+        <p>When the cache lives on a btrfs filesystem, versioned snapshots
+           are created automatically with configurable max retention.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🔔</span>
+        <h3>Desktop Notifications</h3>
+        <p>Optional notify-send alerts when a scheduled backup completes,
+           so you always know the last run status.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">📁</span>
+        <h3>Configurable Cache Dir</h3>
+        <p>Store the cache on any path: internal partition, external USB
+           drive, NFS mount. The subfolder <code>.rootfs_cache</code> is
+           created automatically.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🏠</span>
+        <h3>/home Inclusion Option</h3>
+        <p>Optionally include <code>/home</code> in the backup scope.
+           A clear warning advises that this increases backup size and time.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">📋</span>
+        <h3>Real-time Log</h3>
+        <p>Every operation is logged to
+           <code>/var/log/distroclone-backup.log</code> and shown live
+           in a YAD log window.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🌍</span>
+        <h3>Multilanguage</h3>
+        <p>Auto-detects system locale. Full support for
+           English, Italiano, Deutsch, Français, Español.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🖼️</span>
+        <h3>YAD Graphical Interface</h3>
+        <p>Clean GTK-based UI powered by YAD. System info (distro, kernel,
+           cache status, cron status) shown on the main dashboard.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🤝</span>
+        <h3>DistroClone Integration</h3>
+        <p>Works alongside DistroClone: back up before building an ISO,
+           restore if the build leaves the system in an inconsistent state.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── INSTALL GUIDE ──────────────────────────────────────────── -->
+<section id="guide">
+  <div class="container">
+    <div class="section-label">Step-by-step guide</div>
+    <h2>Installation &amp; First Run</h2>
+
+    <div class="steps">
+
+      <!-- step 1 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">1</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>Download the .deb package</h3>
+          <p>Grab the latest release from the GitHub releases page or
+             from <a href="https://www.syslinuxos.com">syslinuxos.com</a>.
+             You need a Debian-based system (Debian, Ubuntu, Mint, LMDE …).</p>
+          <pre><code># Download with wget (adjust version number as needed)
+wget https://github.com/francoconidi/distroclone-tools/releases/download/v1.2/distroclone-backup_1.2_all.deb</code></pre>
+        </div>
+      </div>
+
+      <!-- step 2 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">2</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>Install the package</h3>
+          <p>Use <code>dpkg</code> to install, then fix any missing dependencies
+             automatically with <code>apt install -f</code>.</p>
+          <pre><code>sudo dpkg -i distroclone-backup_1.2_all.deb
+sudo apt install -f</code></pre>
+          <div class="alert">
+            ✅ The package installs <code>yad</code>, <code>rsync</code> and
+            <code>imagemagick</code> automatically. Install
+            <code>btrfs-progs</code> separately if you want snapshot support.
+          </div>
+        </div>
+      </div>
+
+      <!-- step 3 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">3</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>(Optional) Install btrfs-progs for snapshot versioning</h3>
+          <p>If your cache destination is a btrfs partition, install the
+             btrfs tools to enable versioned snapshot support.</p>
+          <pre><code>sudo apt install btrfs-progs</code></pre>
+        </div>
+      </div>
+
+      <!-- step 4 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">4</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>Launch DistroClone Backup</h3>
+          <p>Find <strong>DistroClone Backup</strong> in your application menu
+             (System category) or launch it from the terminal.</p>
+          <pre><code>distroClone-backup</code></pre>
+          <p>The main dashboard opens, showing your distro, kernel, current
+             cache status, and cron schedule.</p>
+        </div>
+      </div>
+
+      <!-- step 5 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">5</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>(Optional) Configure the cache directory</h3>
+          <p>Open <em>Settings</em> from the toolbar to change the cache
+             location. Default is <code>/mnt</code>. Point it to an external
+             drive or NFS share for offsite protection.</p>
+          <div class="alert warn">
+            ⚠️ Make sure the destination has enough free space.
+            A typical Debian desktop rootfs is 5–15 GB.
+          </div>
+        </div>
+      </div>
+
+      <!-- step 6 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">6</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>Run a Full Backup</h3>
+          <p>Click <strong>Full Backup</strong>. This clones the entire rootfs
+             via rsync into <code>&lt;cache-dir&gt;/&lt;distro&gt;_live/.rootfs_cache</code>.
+             Required before incremental backups can be used.</p>
+          <pre><code># A full backup runs in the background; progress is shown in the log window.
+# Typical time: 5–20 min depending on system size.</code></pre>
+        </div>
+      </div>
+
+      <!-- step 7 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">7</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>Schedule automatic incremental backups</h3>
+          <p>Click <strong>Schedule Backup</strong>, choose frequency
+             (daily / weekly / monthly), the hour, and whether to show a
+             desktop notification. Save — the crontab entry is written
+             automatically.</p>
+          <pre><code># To run incremental backup silently (used by cron internally):
+distroClone-backup --incremental-silent</code></pre>
+        </div>
+      </div>
+
+      <!-- step 8 -->
+      <div class="step">
+        <div class="step-num-wrap">
+          <div class="step-num">8</div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-body">
+          <h3>Restore the system if needed</h3>
+          <p>Click <strong>Restore System</strong>. A confirmation dialog
+             shows backup date, distro, kernel, and size. Confirm, and rsync
+             overwrites system files while protecting
+             <code>/home</code>, <code>/root</code>, and
+             <code>/boot/efi</code>. Reboot when done.</p>
+          <div class="alert">
+            ✅ <strong>Btrfs users:</strong> click <em>Restore from Snapshot</em>
+            to pick any previously versioned state from the list.
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /steps -->
+  </div>
+</section>
+
+<!-- ── USAGE ──────────────────────────────────────────────────── -->
+<section id="usage">
+  <div class="container">
+    <div class="section-label">Reference</div>
+    <h2>CLI Usage</h2>
+    <pre><code># Open the graphical interface
+distroClone-backup
+
+# Run a silent incremental backup (for cron jobs)
+distroClone-backup --incremental-silent</code></pre>
+
+    <h3 style="margin-top:1.5rem;">Log file</h3>
+    <pre><code>tail -f /var/log/distroclone-backup.log</code></pre>
+
+    <h3 style="margin-top:1.5rem;">Supported languages</h3>
+    <p>The interface language is auto-detected from the <code>$LANG</code>
+       environment variable.</p>
+    <div class="lang-pills">
+      <div class="lang-pill"><span class="flag">🇬🇧</span>English</div>
+      <div class="lang-pill"><span class="flag">🇮🇹</span>Italiano</div>
+      <div class="lang-pill"><span class="flag">🇩🇪</span>Deutsch</div>
+      <div class="lang-pill"><span class="flag">🇫🇷</span>Français</div>
+      <div class="lang-pill"><span class="flag">🇪🇸</span>Español</div>
+    </div>
+
+    <h3 style="margin-top:1.5rem;">Supported distributions</h3>
+    <ul class="distro-list" style="margin-top:.5rem;">
+      <li>🐧 Debian (Bookworm+)</li>
+      <li>🟠 Ubuntu (22.04+)</li>
+      <li>🌿 Linux Mint</li>
+      <li>🍃 LMDE</li>
+      <li>🔮 Elementary OS</li>
+      <li>🖥️ SysLinuxOS</li>
+      <li>🟣 ZorinOS 18</li>
+      <li>➕ Other Debian derivatives</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ── DEPENDENCIES ───────────────────────────────────────────── -->
+<section id="deps">
+  <div class="container">
+    <div class="section-label">Requirements</div>
+    <h2>Dependencies</h2>
+    <table class="dep-table">
+      <thead>
+        <tr>
+          <th>Package</th>
+          <th>Role</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>yad</code></td>
+          <td>Graphical dialog toolkit (GTK)</td>
+          <td><span class="req">Required</span></td>
+        </tr>
+        <tr>
+          <td><code>rsync</code></td>
+          <td>Filesystem synchronisation engine</td>
+          <td><span class="req">Required</span></td>
+        </tr>
+        <tr>
+          <td><code>imagemagick</code></td>
+          <td>Image generation for UI elements</td>
+          <td><span class="req">Required</span></td>
+        </tr>
+        <tr>
+          <td><code>distroclone</code></td>
+          <td>Companion ISO builder</td>
+          <td><span class="rec">Recommended</span></td>
+        </tr>
+        <tr>
+          <td><code>btrfs-progs</code></td>
+          <td>Btrfs snapshot versioning support</td>
+          <td><span class="rec">Recommended</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="alert" style="margin-top:1rem;">
+      All <strong>Required</strong> packages are installed automatically by the
+      <code>.deb</code> package via <code>apt install -f</code>.
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ─────────────────────────────────────────────────── -->
+<footer>
+  <div class="container">
+    <p>
+      <strong>DistroClone Backup &amp; Restore</strong> v1.2 &nbsp;·&nbsp;
+      GPL-3.0-or-later &nbsp;·&nbsp;
+      Franco Conidi aka edmond
+      &lt;<a href="mailto:fconidi@gmail.com">fconidi@gmail.com</a>&gt;
+    </p>
+    <p style="margin-top:.4rem;">
+      <a href="https://www.syslinuxos.com">syslinuxos.com</a> &nbsp;·&nbsp;
+      <a href="https://www.francoconidi.it">francoconidi.it</a>
+    </p>
+  </div>
+</footer>
+
+<!-- ── THEME SCRIPT ───────────────────────────────────────────── -->
+<script>
+  // Initialise from saved preference or system preference
+  (function () {
+    const saved = localStorage.getItem('dcb-theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const theme = saved || (prefersDark ? 'dark' : 'light');
+    document.documentElement.setAttribute('data-theme', theme);
+    updateBtn(theme);
+  })();
+
+  function toggleTheme () {
+    const current = document.documentElement.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('dcb-theme', next);
+    updateBtn(next);
+  }
+
+  function updateBtn (theme) {
+    document.getElementById('theme-icon').textContent  = theme === 'dark' ? '☀️' : '🌙';
+    document.getElementById('theme-label').textContent = theme === 'dark' ? 'Light' : 'Dark';
+  }
+</script>
+
+</body>
+</html>

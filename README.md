@@ -7,7 +7,8 @@
 ![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu%20%7C%20Mint%20%7C%20LMDE-purple)
 ![Languages](https://img.shields.io/badge/languages-EN%20IT%20DE%20FR%20ES-orange)
 
----
+---<img width="128" height="136" alt="distroclone-bkp-logo" src="https://github.com/user-attachments/assets/56772e98-77e4-4b32-9053-b7f197855c24" />
+
 
 ## What is DistroClone Backup?
 

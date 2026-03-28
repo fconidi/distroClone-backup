@@ -82,6 +82,8 @@ Step 1 — Download the package
 
 Step 2 — Install the package
 
+    sudo apt install -y ./distroclone-backup_1.2_all.deb
+    or
     sudo dpkg -i distroclone-backup_1.2_all.deb
     sudo apt install -f
 

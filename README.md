@@ -78,7 +78,7 @@ Multilanguage
 
 Step 1 — Download the package
 
-    wget https://github.com/francoconidi/distroclone-backup/releases/download/v1.2/distroclone-backup_1.2_all.deb
+    wget https://github.com/fconidi/distroclone-backup/releases/download/v1.2/distroclone-backup_1.2_all.deb
 
 Step 2 — Install the package
 

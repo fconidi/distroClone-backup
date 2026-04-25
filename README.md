@@ -10,7 +10,7 @@
 Graphical incremental rootfs backup and restore tool for Debian-based systems.
 Companion to DistroClone, the live ISO builder.
 
-Version: 1.2 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
+Version: 1.2.1 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
 
 ---
 
@@ -78,13 +78,13 @@ Multilanguage
 
 Step 1 — Download the package
 
-    wget https://github.com/fconidi/distroclone-backup/releases/download/v1.2/distroclone-backup_1.2_all.deb
+    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.2.1/distroclone-backup_1.2.1_all.deb
 
 Step 2 — Install the package
 
-    sudo apt install -y ./distroclone-backup_1.2_all.deb
+    sudo apt install -y ./distroclone-backup_1.2.1_all.deb
     or
-    sudo dpkg -i distroclone-backup_1.2_all.deb
+    sudo dpkg -i distroclone-backup_1.2.1_all.deb
     sudo apt install -f
 
 The second command automatically resolves and installs any missing dependencies.

@@ -7,6 +7,22 @@ Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
+Version 1.2.1 — 2026-04-25
+
+Fixed
+
+    btrfs: full backup fails when parent cache directory does not exist
+
+        On a btrfs root filesystem, init_btrfs_subvolume() called
+        btrfs subvolume create $ROOTFS_CACHE without first creating the
+        parent directory $CACHE_BASE (e.g. /home/edmond/Documents/SysLinuxOS_backup/).
+        The subvolume create failed silently (stderr suppressed) and rsync then
+        aborted with exit code 11 ("No such file or directory").
+        On ext4 the code path used mkdir -p which created all parents automatically.
+        Fix: add sudo mkdir -p "$CACHE_BASE" before the subvolume create call.
+
+---
+
 Version 1.2 — 2026-03-28 (updated with bug fixes)
 
 Fixed

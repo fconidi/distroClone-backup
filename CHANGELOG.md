@@ -1,105 +1,193 @@
 # Changelog
 
-All notable changes to **DistroClone Backup & Restore** are documented in this file.
+All notable changes to DistroClone Backup and Restore are documented in this file.
 
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-Versioning follows [Semantic Versioning](https://semver.org/).
-
----
-
-## [1.2] — 2025
-
-### Added
-
-#### Btrfs snapshot versioning
-- New `is_btrfs()` function — detects whether the cache destination lives on a btrfs filesystem.
-- New `init_btrfs_subvolume()` — initialises `.rootfs_cache` as a btrfs subvolume on first full backup; warns if an existing non-subvolume cache is found.
-- New `create_snapshot()` — creates a read-only btrfs snapshot of the cache before each backup run, named `@YYYY-MM-DD_HH:MM`; writes a `.meta` sidecar with date, distro, kernel, and size.
-- New `list_snapshots()` — enumerates available snapshots sorted oldest-to-newest.
-- New `prune_snapshots()` — automatically deletes snapshots beyond the `MAX_SNAPSHOTS` retention limit after each backup.
-- Snapshot creation and pruning are integrated transparently into the full backup flow; on non-btrfs destinations the legacy `mkdir` path is preserved.
-
-#### Restore from Snapshot (`do_restore_snapshot`)
-- New GUI dialog lists all available snapshots in a YAD table with columns: name, date, distro, size.
-- Confirmation dialog shows snapshot name and protected paths before proceeding.
-- Restore uses `rsync` with the same exclusion rules as the standard restore: `/home`, `/root`, `/boot/efi`, virtual filesystems, and snap directories are always protected.
-- *Restore from Snapshot* button appears in the main dashboard only when the cache is on btrfs **and** at least one snapshot exists.
-
-#### Settings — advanced options (step 2 dialog)
-- Settings redesigned as a two-step flow:
-  - **Step 1:** directory selection (unchanged behaviour).
-  - **Step 2:** new advanced options dialog with a numeric spinner for **Max snapshots to keep** (0 = disabled, default 3, range 0–20).
-- `MAX_SNAPSHOTS` variable persisted to the configuration file alongside `CACHE_BASE_DIR`.
-- `SNAPSHOTS_DIR` variable (`${CACHE_BASE}/.snapshots`) derived automatically from the configured cache base.
-
-#### Main dashboard
-- New **Versioning** status line:
-  - `● Versioning active (btrfs)` with snapshot count when on btrfs.
-  - `● Versioning not available (non-btrfs)` on standard filesystems.
-- Window height increased from 500 to 540 px to accommodate the new line.
-- Window title updated to **v1.2**.
-
-#### Multilanguage strings — all 5 languages (EN · IT · DE · FR · ES)
-New strings added in every supported language:
-
-| Key | Purpose |
-|---|---|
-| `S_SETTINGS_MAX_SNAPS` | Label for the max-snapshots spinner |
-| `S_BTRFS_AVAILABLE` | Dashboard status — btrfs versioning active |
-| `S_BTRFS_NOT_AVAILABLE` | Dashboard status — non-btrfs destination |
-| `S_BTRFS_NOT_SUBVOL_WARN` | Warning when existing cache is not a btrfs subvolume |
-| `S_SNAPSHOTS_NONE` | "No snapshots" label |
-| `S_SNAPSHOTS_COUNT` | "N snapshots available" label |
-| `S_BTN_RESTORE_SNAP` | *Restore from Snapshot* button label |
-| `S_SNAP_CREATING` | Log line — snapshot creation in progress |
-| `S_SNAP_CREATED` | Log line — snapshot created successfully |
-| `S_SNAP_PRUNING` | Log line — pruning old snapshots |
-| `S_SNAP_SELECT_TITLE` | Snapshot selector dialog title |
-| `S_SNAP_SELECT_TEXT` | Snapshot selector dialog header text |
-| `S_SNAP_NO_SNAPS` | Warning when no snapshots are available |
-| `S_SNAP_ERR_TITLE` | Snapshot error dialog title |
-| `S_SNAP_ERR_TEXT` | Snapshot error dialog body |
-
-#### Package
-- `Recommends` field in `DEBIAN/control` extended with `btrfs-progs`.
-- `postinst` sudoers block adds passwordless rules for `/usr/bin/btrfs` and `/sbin/btrfs` for the `sudo` group.
+Format follows Keep a Changelog (https://keepachangelog.com/en/1.0.0/).
+Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
-### Changed
+Version 1.3.3 — 2026-06-12
 
-- **Settings dialog step 1** — removed `--image` / `--image-on-top` from the directory-selection YAD call; branding image moved to step 2 only.
-- **Full backup flow** — btrfs path branches on `is_btrfs()`: subvolume init + snapshot + prune before rsync; `mkdir -p` fallback for non-btrfs.
-- **Configuration file** — now stores two keys (`CACHE_BASE_DIR`, `MAX_SNAPSHOTS`) instead of one.
-- **Main dashboard layout** — button row extended with conditional *Restore from Snapshot* entry (action code `45`).
+Fixed
+
+    Upgrade from any previous 1.3.x version fails — binary deleted mid-upgrade
+
+        The postrm script of versions 1.3.0 and 1.3.1 deleted the wrapper at
+        /usr/bin/distroclone-backup unconditionally. In an upgrade, dpkg executes
+        the OLD postrm AFTER unpacking the new files, permanently deleting the
+        binary just written by the new package and causing the new postinst to fail.
+        Because the old postrm is already installed there is no way to fix it by
+        patching the postrm — the fix must be in the new postinst.
+
+        Fix: postinst is now self-healing. If /usr/bin/distroclone-backup is absent
+        after unpacking (deleted by an old postrm), postinst recreates it as a
+        two-line wrapper that exec-calls the real script at
+        /usr/share/distroclone-backup/distroclone-backup.sh.
+
+    Binary name policy fix
+
+        The real script is now installed at /usr/share/distroclone-backup/
+        distroclone-backup.sh (lowercase, consistent with Debian Policy 5.6.1).
+        /usr/bin/distroclone-backup is the wrapper. A compatibility symlink
+        /usr/bin/distroClone-backup (CamelCase) is provided for existing cron
+        entries created by the GUI v1.x.
+
+    postrm guarded with case remove|purge
+
+        The postrm now guards deletions with case "$1" in remove|purge so
+        files are removed only on actual remove/purge, not during upgrade.
 
 ---
 
-## [1.1] — 2024
+Version 1.3.1 — 2026-05-20
+
+Fixed
+
+    "command not found" when invoking the tool by package name
+
+        In v1.3.0 the binary was installed as /usr/bin/distroClone-backup
+        (CamelCase), inconsistent with the package name, man page, and the
+        /usr/share/distroclone-backup/ path.
+        Fix: postinst creates a symlink /usr/bin/distroclone-backup ->
+        distroClone-backup so both names work. The CamelCase binary is
+        preserved for existing cron entries.
+
+    .desktop Exec= now uses the lowercase name.
+
+    postrm: removes the lowercase symlink on remove/purge.
+
+---
+
+Version 1.3.0 — 2026-05-16
+
+Added
+
+    Snapper-managed versioning on btrfs cache destinations
+
+        A dedicated snapper config named "distroclone-backup" is created on the
+        btrfs cache destination. Each backup creates a snapper snapshot; the
+        retention policy is applied automatically by snapper. Enables browsing
+        and restoring individual historical backups from snapper list / snapper
+        undochange.
+
+    Adaptive backend selection
+
+        On a btrfs destination with snapper installed: snapper snapshot versioning.
+        On a btrfs destination without snapper: raw btrfs snapshots (v1.2.2 behavior).
+        On ext4/xfs or any non-btrfs destination: classic rsync without versioning.
+        No regression on existing non-btrfs setups.
+
+    Recommends: btrfs-progs, snapper
+
+---
+
+Version 1.2.2 — 2026-05-15
+
+Fixed
+
+    Critical restore bug — packages installed after last backup not removed
+
+        Restore rsync did not use --delete, leaving the system in an inconsistent
+        state: packages installed after the last backup had their binaries present
+        on disk but were absent from the dpkg database.
+        Fix: restore rsync now uses --delete --delete-after.
+
+    Exclusion lists between backup and restore could diverge silently
+
+        Root cause of the v0.x --delete data loss incident: asymmetric excludes
+        made --delete unsafe. The exclusion set is now built by a shared
+        build_common_excludes() function used by both backup and restore.
+        /home, /root, /boot/efi, /snap, /var/log, /var/lib/apt/lists, and
+        /etc/NetworkManager/system-connections are always excluded on both sides.
+
+---
+
+Version 1.2.1 — 2026-04-25
+
+Fixed
+
+    btrfs: full backup fails when parent cache directory does not exist
+
+        init_btrfs_subvolume() called btrfs subvolume create $ROOTFS_CACHE without
+        first creating the parent directory $CACHE_BASE. The subvolume create failed
+        silently and rsync aborted with exit code 11.
+        Fix: sudo mkdir -p "$CACHE_BASE" added before the subvolume create call.
+
+---
+
+Version 1.2 — 2026-03-28 (updated with bug fixes)
+
+Fixed
+
+    Cron mode — wrong cache path and missing btrfs snapshot support
+
+        CACHE_BASE was hardcoded to /mnt/<distro>_live/.rootfs_cache. The cron
+        now reads ~/.config/distroclone-backup/settings.conf from the first real
+        user (uid 1000-65533) who has a configuration file, then derives
+        CACHE_BASE_DIR, MAX_SNAPSHOTS, and all dependent paths.
+        Cron mode now calls is_btrfs(), create_snapshot(), and prune_snapshots()
+        so automatic nightly backups on btrfs destinations create versioned snapshots.
+
+    Delete Cache — snapshot subvolumes left orphaned on btrfs
+
+        do_delete_cache called rm -rf on $ROOTFS_CACHE and $CACHE_META but never
+        touched $SNAPSHOTS_DIR. On btrfs, rm -rf cannot remove subvolumes.
+        Fix: iterates every @* snapshot in $SNAPSHOTS_DIR, deletes each with
+        btrfs subvolume delete (falling back to rm -rf on non-btrfs), removes
+        the .meta sidecar, then removes $SNAPSHOTS_DIR. Main cache subvolume
+        also deleted via btrfs subvolume delete when applicable.
+
+---
+
+Version 1.2 — 2025-03-27
+
+Added
+
+    Btrfs snapshot versioning
+        New is_btrfs() — detects btrfs cache destination.
+        New init_btrfs_subvolume() — creates .rootfs_cache as btrfs subvolume.
+        New create_snapshot() — read-only snapshot @YYYY-MM-DD_HH:MM + .meta sidecar.
+        New list_snapshots() — enumerates snapshots oldest to newest.
+        New prune_snapshots() — deletes snapshots beyond MAX_SNAPSHOTS limit.
+
+    Restore from Snapshot
+        GUI dialog with snapshot list (name, date, distro, size).
+        Same rsync exclusion rules as standard restore.
+        Button visible only when cache is on btrfs with at least one snapshot.
+
+    Settings advanced options (step 2 dialog)
+        Numeric spinner for Max snapshots to keep (0 = disabled, default 3).
+        MAX_SNAPSHOTS persisted to settings file alongside CACHE_BASE_DIR.
+
+    Multilanguage strings added in all 5 languages (EN/IT/DE/FR/ES).
+
+    Package: Recommends extended with btrfs-progs.
+    postinst sudoers block adds rules for /usr/bin/btrfs and /sbin/btrfs.
+
+---
+
+Version 1.1 — 2024
 
 First public release.
 
-### Added
+Added
 
-- Full rootfs backup via `rsync` with real-time log window.
-- Incremental backup — transfers only files modified since the last full backup.
-- Safe system restore — rsync from cache to `/`, with hard exclusions on `/home`, `/root`, `/boot/efi`, virtual filesystems, and snap directories.
-- Graphical cron scheduler (daily / weekly / monthly) with configurable hour and optional desktop notification.
-- Silent cron mode: `distroClone-backup --incremental-silent`.
-- Operations log at `/var/log/distroclone-backup.log`.
-- Cache stored under `<cache-dir>/<distro>_live/.rootfs_cache` (default base: `/mnt`).
-- YAD-based dashboard showing distro, kernel, cache status, and active cron schedule.
-- Multilanguage interface — auto-detected from `$LANG`: **English, Italiano, Deutsch, Français, Español**.
-- Desktop menu entry (`distroclone-backup.desktop`, System category).
-- Application icons at 48 × 48, 128 × 128, 256 × 256 px.
-- Package dependencies: `yad`, `rsync`, `imagemagick`.
+    Full rootfs backup via rsync with real-time log window.
+    Incremental backup — transfers only modified files.
+    Safe restore — /home, /root, /boot/efi always protected.
+    Graphical cron scheduler (daily, weekly, monthly).
+    Silent cron mode: distroClone-backup --incremental-silent.
+    YAD-based dashboard showing distro, kernel, cache status, active cron schedule.
+    Multilanguage: English, Italiano, Deutsch, Francais, Espanol.
+    Desktop menu entry (System category).
 
 ---
 
-## Links
+Links
 
-- 🌐 [syslinuxos.com](https://www.syslinuxos.com)
-- 🌐 [francoconidi.it](https://www.francoconidi.it)
-- 📧 fconidi@gmail.com
+- https://www.syslinuxos.com
+- https://www.francoconidi.it
+- fconidi@gmail.com
 
-*Maintained by Franco Conidi aka edmond — GPL-3.0-or-later*
+Maintained by Franco Conidi aka edmond — GPL-3.0-or-later

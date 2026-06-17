@@ -5,7 +5,7 @@
 Graphical incremental rootfs backup and restore tool for Debian-based systems.
 Companion to DistroClone, the live ISO builder.
 
-Version: 1.3.3 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
+Version: 1.3.4 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
 
 ---
 
@@ -79,7 +79,7 @@ Step 1 — Via SysLinuxOS APT repository (recommended)
 
 Step 2 — Direct .deb download
 
-    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.3.3/distroclone-backup_1.3.3_all.deb
+    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.3.4/distroclone-backup_1.3.3_all.deb
     sudo apt install -y ./distroclone-backup_1.3.3_all.deb
 
 Step 3 — Install snapper (optional, for versioned snapshots on btrfs)

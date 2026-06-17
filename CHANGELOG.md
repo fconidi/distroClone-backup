@@ -7,6 +7,33 @@ Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
+Version 1.3.4 — 2026-06-17
+
+Fixed
+
+    Delete Cache fails on snapper-format btrfs snapshots
+
+        v1.3.0 switched to snapper for versioning, which stores snapshots as
+        numbered subdirectories (N/snapshot) rather than the legacy @YYYY-MM-DD_HH:MM
+        flat format. The old do_delete_cache() only handled the @* flat format and
+        attempted rm -rf on read-only btrfs subvolumes, which always fails with
+        "Read-only file system".
+
+        Fix: do_delete_cache() now handles both formats:
+        – Snapper format: finds N/snapshot subvolumes depth-first and deletes each
+          with btrfs subvolume delete before removing the numbered parent directory.
+        – Legacy @* format: unchanged behaviour (btrfs subvolume delete + .meta sidecar).
+        – .snapshots dir itself is now deleted with btrfs subvolume delete when it
+          is a btrfs subvolume (snapper creates it as one), falling back to rm -rf.
+
+    postinst version string hardcoded to 1.3.3
+
+        The banner printed at the end of postinst said "DistroClone Backup 1.3.3
+        installed" even on version 1.3.4 packages.
+        Fix: updated to read the correct version.
+
+---
+
 Version 1.3.3 — 2026-06-12
 
 Fixed

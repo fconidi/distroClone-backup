@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DistroClone + DistroClone Backup: Build ISO from Cache — Technical Guide</title>
+</head>
+<body>
+
+<!-- ================================================================
+     BOZZA — guide-build-from-cache.html
+     Per: syslinuxos.com e francoconidi.it
+     Versioni: distroclone 1.4.10 + distroclone-backup 1.3.4
+     ================================================================ -->
+
+<h1>Build a Live ISO from DistroClone Backup Cache</h1>
+
+<p>
+Starting with <strong>distroclone 1.4.10</strong> and <strong>distroclone-backup 1.3.4</strong>,
+the two tools are fully interoperable on <strong>btrfs</strong> filesystems.
+DistroClone can build a live ISO directly from the rootfs cache created by DistroClone Backup,
+bypassing the live rsync clone step entirely.
+</p>
+
+<p>
+This guide explains the technical architecture behind the feature, when to use it, and how
+btrfs subvolume layout affects both tools.
+</p>
+
+<hr>
+
+<h2>Why Build from Cache Instead of Live rsync?</h2>
+
+<p>The standard DistroClone workflow clones the <em>running</em> system:</p>
+
+<pre>running system → rsync → /mnt/&lt;distro&gt;_live/rootfs/ → squashfs → ISO</pre>
+
+<p>
+This works well but has a limitation: the clone captures the system as it is
+<em>right now</em>, including any transient state, open files, partially written logs,
+and in-flight processes. If the system is in heavy use during the build, some files
+may be inconsistent.
+</p>
+
+<p>
+DistroClone Backup maintains a <strong>clean, versioned rootfs cache</strong> on a separate
+btrfs volume. The cache is updated on a schedule (or on demand) and each version is
+a stable, read-only btrfs snapshot. Building the ISO from the cache has several advantages:
+</p>
+
+<ul>
+  <li><strong>Reproducible state</strong> — the ISO reflects a known, stable snapshot, not the live system mid-use.</li>
+  <li><strong>Faster builds</strong> — the cache rsync only transfers changed files; the ISO build rsync copies from a local btrfs volume at memory speed.</li>
+  <li><strong>Safe iteration</strong> — the running system is never read during the squashfs phase, eliminating race conditions from concurrent writes.</li>
+  <li><strong>Offline builds</strong> — the cache can be on a dedicated partition or external drive, allowing ISO builds even on a different machine.</li>
+</ul>
+
+<hr>
+
+<h2>How DistroClone Backup Builds the Cache</h2>
+
+<p>
+DistroClone Backup stores the rootfs cache under a configurable base directory.
+The default path is:
+</p>
+
+<pre>/mnt/SysLinuxOS_backup/</pre>
+
+<p>Inside, it creates the following layout:</p>
+
+<pre>/mnt/SysLinuxOS_backup/
+├── .backup_meta          ← metadata file (date, distro, size)
+└── .rootfs_cache/        ← btrfs subvolume (the live rsync target)
+    └── .snapshots/       ← btrfs subvolume managed by snapper
+        ├── 1/
+        │   ├── info.xml
+        │   └── snapshot/ ← read-only btrfs snapshot of .rootfs_cache
+        ├── 2/
+        │   ├── info.xml
+        │   └── snapshot/
+        └── ...
+</pre>
+
+<p>
+<code>.rootfs_cache</code> is created as a <strong>btrfs subvolume</strong>, not a plain
+directory. This allows snapper to take read-only snapshots of it without copying data.
+</p>
+
+<p>
+After each backup run, snapper creates a numbered snapshot inside
+<code>.snapshots/</code> — a read-only point-in-time copy of the rootfs.
+A retention policy (default: keep last 10) prunes old snapshots automatically.
+</p>
+
+<p>The <code>.backup_meta</code> file contains three fields used by DistroClone:</p>
+
+<pre>META_DATE="2026-06-17 14:30"
+META_DISTRO="SysLinuxOS"
+META_SIZE="8.2G"
+</pre>
+
+<hr>
+
+<h2>How DistroClone Detects and Uses the Cache</h2>
+
+<h3>Detection at startup</h3>
+
+<p>
+Before showing the welcome dialog, DistroClone checks for two conditions:
+</p>
+
+<ol>
+  <li><code>/mnt/SysLinuxOS_backup/.rootfs_cache</code> exists as a directory</li>
+  <li><code>/mnt/SysLinuxOS_backup/.backup_meta</code> exists and is readable</li>
+</ol>
+
+<p>
+If both are true, DistroClone reads the metadata and builds a label string:
+</p>
+
+<pre>2026-06-17 14:30 | SysLinuxOS | 8.2G</pre>
+
+<p>
+This label appears in a checkbox added to the welcome YAD dialog:
+</p>
+
+<pre>[ ] Build from DCB cache (2026-06-17 14:30 | SysLinuxOS | 8.2G)</pre>
+
+<p>
+If the cache is not present, the checkbox is not shown and the dialog is identical to
+the standard workflow.
+</p>
+
+<h3>Step 7 — clone step bypass</h3>
+
+<p>
+When the user enables the checkbox, DistroClone sets <code>SOURCE_MODE=cache</code>.
+Step 7 (source validation / live system check) is skipped entirely:
+</p>
+
+<pre>if [ "$SOURCE_MODE" != "cache" ] && [ "$SOURCE" != "/" ]; then
+    # live validation only runs in live mode
+fi
+</pre>
+
+<h3>Step 8 — rsync from cache</h3>
+
+<p>
+In cache mode, step 8 uses <code>$CACHE_DIR</code> as the rsync source instead of
+<code>/</code>. Two differences from the live rsync are notable:
+</p>
+
+<table border="1" cellpadding="6">
+  <tr>
+    <th>Flag</th>
+    <th>Live mode</th>
+    <th>Cache mode</th>
+    <th>Reason</th>
+  </tr>
+  <tr>
+    <td><code>--one-file-system</code></td>
+    <td>yes</td>
+    <td>no</td>
+    <td>
+      On btrfs, <code>--one-file-system</code> would <em>not</em> prevent entering btrfs
+      subvolumes anyway (same device ID). The flag is omitted in cache mode because the
+      source is already a filtered, standalone rootfs — not the running system with
+      mounted virtual filesystems.
+    </td>
+  </tr>
+  <tr>
+    <td><code>--exclude=$LIVE_DIR</code></td>
+    <td>yes</td>
+    <td>no</td>
+    <td>
+      The live build directory (<code>/mnt/&lt;distro&gt;_live/</code>) exists only on the
+      running system, not in the cache.
+    </td>
+  </tr>
+</table>
+
+<p>The cache rsync excludes btrfs-specific paths to avoid carrying subvolume metadata into the ISO:</p>
+
+<pre>--exclude=/.snapshots
+--exclude=/.snapshots/*
+--exclude=/@.rollback-bak-*
+</pre>
+
+<p>
+Standard exclusions still apply: <code>/dev</code>, <code>/proc</code>, <code>/sys</code>,
+<code>/run</code>, <code>/tmp</code>, <code>/mnt</code>, <code>/home</code>,
+<code>/root</code>, <code>/var/log</code>, apt caches, etc.
+</p>
+
+<hr>
+
+<h2>btrfs Subvolume Layout and Interoperability</h2>
+
+<p>
+A typical SysLinuxOS btrfs installation uses the following subvolume layout:
+</p>
+
+<pre>btrfs root (top-level, subvolid=5)
+├── @               ← mounted at /
+├── @home           ← mounted at /home
+└── .snapshots      ← snapper snapshots of @
+
+/mnt/SysLinuxOS_backup/ (separate btrfs volume or subvolume)
+└── .rootfs_cache/  ← subvolume, rsync target
+    └── .snapshots/ ← subvolume, snapper config "distroclone-backup"
+        ├── 1/snapshot   (read-only)
+        ├── 2/snapshot   (read-only)
+        └── ...
+</pre>
+
+<h3>Why rm -rf fails on the cache</h3>
+
+<p>
+<code>rm -rf /mnt/SysLinuxOS_backup/</code> fails with <em>Read-only file system</em>
+because the btrfs read-only snapshots inside <code>.snapshots/N/snapshot/</code> cannot
+be deleted by the kernel's unlink path — only <code>btrfs subvolume delete</code> can
+remove them.
+</p>
+
+<p>The correct deletion order (deepest leaf first):</p>
+
+<pre># 1. Delete each read-only snapshot leaf
+sudo btrfs subvolume delete /mnt/SysLinuxOS_backup/.rootfs_cache/.snapshots/1/snapshot
+sudo btrfs subvolume delete /mnt/SysLinuxOS_backup/.rootfs_cache/.snapshots/2/snapshot
+# ... repeat for each numbered snapshot
+
+# 2. Delete the .snapshots subvolume itself
+sudo btrfs subvolume delete /mnt/SysLinuxOS_backup/.rootfs_cache/.snapshots
+
+# 3. Delete the .rootfs_cache subvolume
+sudo btrfs subvolume delete /mnt/SysLinuxOS_backup/.rootfs_cache
+
+# 4. Now rm -rf works on the remainder
+sudo rm -rf /mnt/SysLinuxOS_backup/
+</pre>
+
+<p>
+DistroClone Backup's <strong>Delete Cache</strong> button (v1.3.4+) handles both snapshot
+formats automatically — snapper-style numbered directories (<code>N/snapshot</code>) and
+the legacy flat format (<code>@YYYY-MM-DD_HH:MM</code>).
+</p>
+
+<hr>
+
+<h2>Typical Workflow</h2>
+
+<p>A complete cycle using both tools together:</p>
+
+<ol>
+  <li>
+    <strong>Run DistroClone Backup — Full Backup</strong><br>
+    Creates <code>/mnt/SysLinuxOS_backup/.rootfs_cache/</code> via rsync clone of the
+    running system. On btrfs, snapper creates snapshot <code>1/snapshot</code>.
+  </li>
+  <li>
+    <strong>Run DistroClone Backup — Incremental Backup</strong> (optional)<br>
+    Updates the cache with changes since the last run. Snapper creates the next numbered
+    snapshot. Previous snapshots remain for rollback.
+  </li>
+  <li>
+    <strong>Launch DistroClone</strong><br>
+    The welcome dialog detects the cache and shows the checkbox with the cache metadata.
+    Enable <em>Build from DCB cache</em>.
+  </li>
+  <li>
+    <strong>DistroClone builds the ISO from the cache</strong><br>
+    Step 7 (live validation) is skipped. Step 8 rsyncs from
+    <code>/mnt/SysLinuxOS_backup/.rootfs_cache/</code>. All subsequent steps
+    (chroot config, Calamares setup, squashfs, GRUB, ISO assembly) run normally.
+  </li>
+  <li>
+    <strong>Test and distribute the ISO</strong><br>
+    The resulting ISO is a clean, reproducible snapshot of the system at the time of
+    the last backup run.
+  </li>
+</ol>
+
+<hr>
+
+<h2>Requirements</h2>
+
+<ul>
+  <li>btrfs filesystem on the backup destination (required for snapper versioning; ext4/xfs falls back to plain rsync without snapshots)</li>
+  <li>snapper installed and configured by DistroClone Backup (<code>sudo apt install snapper btrfs-progs</code>)</li>
+  <li>DistroClone Backup v1.3.0 or later (snapper integration)</li>
+  <li>DistroClone v1.4.10 or later (build-from-cache feature)</li>
+  <li>At least 4–6 GB free space under <code>/mnt</code> for the ISO build working directory</li>
+</ul>
+
+<hr>
+
+<h2>Installation</h2>
+
+<p>Both packages are available from the SysLinuxOS APT repository:</p>
+
+<pre>curl -fsSL https://fconidi.github.io/SysLinuxOS-Tools/client/install-repo.sh | sudo bash
+sudo apt install distroclone distroclone-backup snapper btrfs-progs</pre>
+
+<p>Or download the .deb packages directly:</p>
+
+<pre>wget https://github.com/fconidi/distroClone/releases/latest/download/distroClone_1.4.10_all.deb
+wget https://github.com/fconidi/distroClone-backup/releases/latest/download/distroclone-backup_1.3.4_all.deb
+sudo apt install ./distroClone_1.4.10_all.deb ./distroclone-backup_1.3.4_all.deb</pre>
+
+<hr>
+
+<p>
+<strong>DistroClone</strong> and <strong>DistroClone Backup</strong> are part of the
+SysLinuxOS toolchain — GPL-3.0-or-later — maintained by Franco Conidi aka edmond.
+</p>
+
+<p>
+Further reading:
+<a href="https://syslinuxos.com/distroclone-live-iso-builder/">DistroClone Live ISO Builder</a> ·
+<a href="https://syslinuxos.com/distroclone-backup-restore/">DistroClone Backup &amp; Restore</a> ·
+<a href="https://fconidi.github.io/SysLinuxOS-Tools/">SysLinuxOS APT Repository</a>
+</p>
+
+</body>
+</html>

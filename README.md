@@ -79,7 +79,7 @@ Step 1 — Via SysLinuxOS APT repository (recommended)
 
 Step 2 — Direct .deb download
 
-    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.3.4/distroclone-backup_1.3.3_all.deb
+    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.3.4/distroclone-backup_1.3.4_all.deb
     sudo apt install -y ./distroclone-backup_1.3.3_all.deb
 
 Step 3 — Install snapper (optional, for versioned snapshots on btrfs)

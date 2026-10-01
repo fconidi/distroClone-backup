@@ -7,11 +7,19 @@ Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
+Version 1.3.9 — 2026-10-01
+
+Changed
+
+    Credits for the Russian translation: Андрей Ступак (Andrey Stupak)
+
+---
+
 Version 1.3.8 — 2026-10-01
 
 Added
 
-    Russian (ru) translation, contributed by a Russian user
+    Russian (ru) translation, contributed by Андрей Ступак (Andrey Stupak)
 
 ---
 

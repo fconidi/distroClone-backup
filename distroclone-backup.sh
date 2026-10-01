@@ -593,7 +593,7 @@ load_strings() {
         S_SNAP_ERR_TEXT="<b>✗ ¡Operación de snapshot fallida!</b>"
         ;;
 
-    # ── RUSSIAN ──────────────────────────────────────────────
+    # ── RUSSIAN — translation by Андрей Ступак (Andrey Stupak) ──
     ru)
         S_APP_TITLE="DistroClone Backup &amp; Restore"
         S_APP_TITLE_WIN="DistroClone Backup & Restore"

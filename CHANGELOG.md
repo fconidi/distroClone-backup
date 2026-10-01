@@ -7,6 +7,14 @@ Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
+Version 1.3.8 — 2026-10-01
+
+Added
+
+    Russian (ru) translation, contributed by a Russian user
+
+---
+
 Version 1.3.4 — 2026-06-17
 
 Fixed

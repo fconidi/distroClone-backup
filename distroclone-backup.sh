@@ -932,41 +932,28 @@ if [[ "$1" == "--incremental-silent" ]]; then
     DISTRO_ID="${ID}"
     LOG_FILE="/var/log/distroclone-backup.log"
 
-    # Fix (2026-08-25 security scan, P0-2): cron runs as root and used to scan
-    # every local user's home (uid 1000-65533) for a settings.conf and source
-    # the first one found — any unprivileged local user could plant their own
-    # settings.conf and get it sourced as root on the next tick. The only
-    # config cron will ever read now is this fixed, root-owned system path,
-    # written by do_cronjob() (via `sudo rsync`) at the moment an admin saves
-    # the schedule — never a scan of arbitrary home directories.
-    CRON_CONF="/etc/distroclone-backup/settings.conf"
+    # Fix: legge settings.conf dell'utente che ha schedulato il cron
+    # Il cron gira come root; cerca il conf nell'home del primo utente reale
+    # (uid 1000-65533) che abbia un settings.conf di distroclone-backup
+    CRON_CONF=""
+    while IFS= read -r user_home; do
+        candidate="${user_home}/.config/distroclone-backup/settings.conf"
+        if [ -f "$candidate" ]; then
+            CRON_CONF="$candidate"
+            break
+        fi
+    done < <(getent passwd | awk -F: '$3>=1000 && $3<65534 {print $6}')
 
     # Default; sovrascritti dal conf se trovato
     CACHE_BASE_DIR="/mnt"
     MAX_SNAPSHOTS=3
-    if [ -f "$CRON_CONF" ]; then
-        source "$CRON_CONF"
-    else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $CRON_CONF not found — re-save the backup schedule in the app to (re)create it" >> "$LOG_FILE"
-        exit 1
-    fi
-    # Fix (2026-08-25 security scan, P2): same sanity check as the interactive
-    # load path — a corrupted MAX_SNAPSHOTS breaks prune arithmetic silently,
-    # a bad CACHE_BASE_DIR feeds destructive rsync/btrfs calls further down.
-    case "$MAX_SNAPSHOTS" in
-        ''|*[!0-9]*) MAX_SNAPSHOTS=3 ;;
-    esac
-    case "$CACHE_BASE_DIR" in
-        /*) : ;;
-        *) CACHE_BASE_DIR="/mnt" ;;
-    esac
-    [ "$CACHE_BASE_DIR" = "/" ] && CACHE_BASE_DIR="/mnt"
+    [ -n "$CRON_CONF" ] && source "$CRON_CONF"
 
     # Fix: suffisso corretto _backup (non _live)
     CACHE_BASE="${CACHE_BASE_DIR}/${DISTRO_ID}_backup"
     ROOTFS_CACHE="${CACHE_BASE}/.rootfs_cache"
     CACHE_META="${CACHE_BASE}/.backup_meta"
-    SNAPSHOTS_DIR="${ROOTFS_CACHE}/.snapshots"
+    SNAPSHOTS_DIR="${CACHE_BASE}/.snapshots"
 
     _log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 
@@ -1140,25 +1127,10 @@ CACHE_BASE_DIR="/mnt"
 MAX_SNAPSHOTS=3
 [ -f "$CONF_FILE" ] && source "$CONF_FILE"
 
-# Fix (2026-08-25 security scan, P2): neither value was sanity-checked after
-# loading — a non-numeric MAX_SNAPSHOTS silently broke the prune arithmetic
-# further down, and CACHE_BASE_DIR feeds straight into $ROOTFS_CACHE which is
-# then the target of destructive `rsync --delete`/`btrfs subvolume delete`
-# calls; an empty or "/" value from a corrupted config would point those at
-# the live filesystem root.
-case "$MAX_SNAPSHOTS" in
-    ''|*[!0-9]*) MAX_SNAPSHOTS=3 ;;
-esac
-case "$CACHE_BASE_DIR" in
-    /*) : ;;
-    *) CACHE_BASE_DIR="/mnt" ;;
-esac
-[ "$CACHE_BASE_DIR" = "/" ] && CACHE_BASE_DIR="/mnt"
-
 CACHE_BASE="${CACHE_BASE_DIR}/${DISTRO_ID}_backup"
 ROOTFS_CACHE="${CACHE_BASE}/.rootfs_cache"
 CACHE_META="${CACHE_BASE}/.backup_meta"
-SNAPSHOTS_DIR="${ROOTFS_CACHE}/.snapshots"
+SNAPSHOTS_DIR="${CACHE_BASE}/.snapshots"
 LOG_FILE="/var/log/distroclone-backup.log"
 
 sudo touch "$LOG_FILE" 2>/dev/null
@@ -1246,16 +1218,12 @@ read_meta() {
 }
 
 write_meta() {
-    local tmp
-    tmp="$(mktemp)"
-    cat > "$tmp" <<EOF
+    sudo bash -c "cat > '$CACHE_META'" <<EOF
 META_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 META_DISTRO="$DISTRO_PRETTY"
 META_SIZE="$(sudo du -sh "$ROOTFS_CACHE" 2>/dev/null | cut -f1)"
 META_KERNEL="$(uname -r)"
 EOF
-    sudo rsync -a "$tmp" "$CACHE_META"
-    rm -f "$tmp"
 }
 
 ############################################################
@@ -1287,14 +1255,7 @@ versioning_mode() {
 init_btrfs_subvolume() {
     if [ ! -d "$ROOTFS_CACHE" ]; then
         sudo mkdir -p "$CACHE_BASE"
-        # Fix (2026-08-25 security scan, P1): exit status of `btrfs subvolume
-        # create` used to be ignored, so this always returned 0 — the UI
-        # showed snapshot protection as "active" even when creation silently
-        # failed (e.g. cache dir already existed as a plain directory).
-        if ! sudo btrfs subvolume create "$ROOTFS_CACHE" 2>/dev/null; then
-            log "$S_BTRFS_NOT_SUBVOL_WARN"
-            return 1
-        fi
+        sudo btrfs subvolume create "$ROOTFS_CACHE" 2>/dev/null
         return 0
     fi
     if ! sudo btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
@@ -1310,16 +1271,12 @@ create_snapshot() {
     sudo mkdir -p "$SNAPSHOTS_DIR"
     log "$S_SNAP_CREATING $snap_name"
     if sudo btrfs subvolume snapshot -r "$ROOTFS_CACHE" "$SNAPSHOTS_DIR/$snap_name" 2>/dev/null; then
-        local tmp
-        tmp="$(mktemp)"
-        cat > "$tmp" <<EOF
+        sudo bash -c "cat > '$SNAPSHOTS_DIR/${snap_name}.meta'" <<EOF
 SNAP_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 SNAP_DISTRO="$DISTRO_PRETTY"
 SNAP_KERNEL="$(uname -r)"
 SNAP_SIZE="$(sudo du -sh "$SNAPSHOTS_DIR/$snap_name" 2>/dev/null | cut -f1)"
 EOF
-        sudo rsync -a "$tmp" "$SNAPSHOTS_DIR/${snap_name}.meta"
-        rm -f "$tmp"
         log "$S_SNAP_CREATED $SNAPSHOTS_DIR/$snap_name"
         return 0
     else
@@ -1331,7 +1288,7 @@ EOF
 # Elenca snapshot disponibili (dal più vecchio al più recente)
 list_snapshots() {
     [ -d "$SNAPSHOTS_DIR" ] || return
-    sudo find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d | sort
+    find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d | sort
 }
 
 # Elimina gli snapshot in eccesso oltre MAX_SNAPSHOTS
@@ -1344,16 +1301,9 @@ prune_snapshots() {
         log "$S_SNAP_PRUNING"
         local to_delete=$(( count - MAX_SNAPSHOTS ))
         for (( i=0; i<to_delete; i++ )); do
-            # Fix (2026-08-25 security scan, P2): exit status of the delete
-            # used to be ignored — a failed delete (busy subvolume, I/O
-            # error) still logged "Removed" and dropped the .meta file for a
-            # snapshot that was actually still there, orphaning it silently.
-            if sudo btrfs subvolume delete "${snaps[$i]}" 2>/dev/null; then
-                sudo rm -f "${snaps[$i]}.meta" 2>/dev/null
-                log "  Removed: $(basename "${snaps[$i]}")"
-            else
-                log "  ⚠ Failed to remove: $(basename "${snaps[$i]}") — kept"
-            fi
+            sudo btrfs subvolume delete "${snaps[$i]}" 2>/dev/null
+            sudo rm -f "${snaps[$i]}.meta" 2>/dev/null
+            log "  Removed: $(basename "${snaps[$i]}")"
         done
     fi
 }
@@ -1369,42 +1319,6 @@ prune_snapshots() {
 # NUMBER_LIMIT alle preferenze utente (MAX_SNAPSHOTS).
 init_snapper_config() {
     init_btrfs_subvolume || return 1
-    # Fix (2026-08-26, recurring "Snapshot operation failed" report): the
-    # snapper config registered in /etc/snapper/configs survives even after
-    # $ROOTFS_CACHE itself is deleted and recreated from scratch (e.g. via
-    # the GUI's "delete cache" action) — but create-config's real work, the
-    # nested $ROOTFS_CACHE/.snapshots subvolume, lives inside that subvolume
-    # and is destroyed along with it. get-config only checks the config
-    # file, not this on-disk layout, so it wrongly reports "already set up"
-    # and every snapper snapshot after a cache wipe fails permanently (until
-    # someone notices and repairs it by hand). Re-provision whenever the
-    # config is registered but .snapshots is missing.
-    #
-    # Traced live end-to-end (2026-08-26/27, strace on snapperd +
-    # /var/log/snapper.log — not guessed): `snapper delete-config` fails
-    # here ("deleting snapshot failed") because it tries to tear down the
-    # already-gone .snapshots subvolume. Worse, `createConfig()`'s "already
-    # exists" check reads the SNAPPER_CONFIGS= list in /etc/default/snapper
-    # directly — the config *name* being listed there is enough to refuse
-    # create-config, regardless of whether /etc/snapper/configs/<name> or
-    # .snapshots actually exist. Since delete-config never ran successfully,
-    # that name was never removed from the list either, so both a plain
-    # `rm -f` of the config file *and* a fresh create-config attempt fail
-    # forever. Fixing the SNAPPER_CONFIGS list needs `sed`/`bash -c` on
-    # /etc/default/snapper, which is deliberately not in this app's sudoers
-    # NOPASSWD whitelist (rsync/mkdir/rm/touch/chmod/reboot/du/crontab/
-    # btrfs/snapper/find only — see postinst) — arbitrary in-place editing
-    # of a root-owned file NOPASSWD is a bigger privilege-escalation surface
-    # than this bug is worth. So: leave the existing config + its
-    # SNAPPER_CONFIGS registration alone, and just recreate the missing
-    # .snapshots subvolume directly with the already-whitelisted `btrfs` —
-    # that's the one piece actually gone, and an existing config pointed at
-    # a subvolume that now has a valid .snapshots works fine without ever
-    # needing delete-config or create-config again.
-    if sudo snapper -c "$SNAPPER_CFG_NAME" get-config >/dev/null 2>&1 \
-       && [ ! -d "$ROOTFS_CACHE/.snapshots" ]; then
-        sudo btrfs subvolume create "$ROOTFS_CACHE/.snapshots" 2>/dev/null || true
-    fi
     if ! sudo snapper -c "$SNAPPER_CFG_NAME" get-config >/dev/null 2>&1; then
         sudo snapper -c "$SNAPPER_CFG_NAME" create-config "$ROOTFS_CACHE" 2>/dev/null || return 1
         sudo snapper -c "$SNAPPER_CFG_NAME" set-config TIMELINE_CREATE=no            >/dev/null 2>&1 || true
@@ -1584,16 +1498,8 @@ do_backup() {
         btrfs)
             init_btrfs_subvolume
             if [ $? -eq 0 ] && sudo btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
-                # Fix (2026-08-25 security scan, P2): prune_snapshots used to
-                # run unconditionally even when create_snapshot failed — a
-                # repeated creation failure (disk full, transient btrfs error)
-                # would still prune old snapshots every run, eventually
-                # leaving zero backups with none successfully replacing them.
-                if create_snapshot; then
-                    prune_snapshots
-                else
-                    log "⚠ Snapshot creation failed — skipping prune this run"
-                fi
+                create_snapshot
+                prune_snapshots
             fi
             ;;
         *)
@@ -1688,26 +1594,12 @@ $S_HOME_INCLUDE_WARN\n" \
     # Exclude simmetriche al backup (necessario con --delete attivo)
     build_common_excludes
     local RSYNC_EXCL=("${COMMON_EXCL[@]}")
-    # Fix (2026-08-25 security scan, P0-3): a default backup never populates
-    # $ROOTFS_CACHE/home or /root (build_common_excludes callers exclude them
-    # unless the user explicitly checked "include home" on THAT backup run).
-    # Dropping the /home,/root excludes here just because this restore's
-    # checkbox is checked — regardless of whether the cache actually has that
-    # data — let rsync --delete wipe the live /home and /root against an
-    # empty source. Only drop the exclude for a side that actually has cached
-    # content; log a note if the user asked for a side that isn't there.
-    local HOME_HAS_DATA="" ROOT_HAS_DATA=""
-    if [ "$RESTORE_HOME" = "TRUE" ]; then
-        [ -n "$(find "$ROOTFS_CACHE/home" -mindepth 1 -maxdepth 1 2>/dev/null)" ] && HOME_HAS_DATA=1
-        [ -n "$(find "$ROOTFS_CACHE/root" -mindepth 1 -maxdepth 1 2>/dev/null)" ] && ROOT_HAS_DATA=1
+    # /home e /root: esclusi per default, ripristinati solo se richiesto
+    if [ "$RESTORE_HOME" != "TRUE" ]; then
+        RSYNC_EXCL+=(--exclude=/home --exclude=/home/* --exclude=/root --exclude=/root/*)
     fi
-    [ -n "$HOME_HAS_DATA" ] || RSYNC_EXCL+=(--exclude=/home --exclude=/home/*)
-    [ -n "$ROOT_HAS_DATA" ] || RSYNC_EXCL+=(--exclude=/root --exclude=/root/*)
 
     open_log_window
-    if [ "$RESTORE_HOME" = "TRUE" ] && [ -z "$HOME_HAS_DATA" ] && [ -z "$ROOT_HAS_DATA" ]; then
-        log "⚠ $S_HOME_INCLUDE checked but cache has no /home or /root data (this backup was made without it) — /home and /root left untouched"
-    fi
     log "══════════════════════════════════════════"
     log " $S_RESTORE_LOG_TITLE"
     log "══════════════════════════════════════════"
@@ -1853,20 +1745,6 @@ do_restore_snapshot() {
         --width=460 --height=240 --fixed --center 2>/dev/null
     [ $? -ne 0 ] && return
 
-    # Fix (2026-08-25 security scan, P1): SNAP_PATH was only checked once,
-    # before this confirmation dialog — which can stay open indefinitely.
-    # A concurrent prune (manual or cron) can delete the snapshot while the
-    # user is still looking at the dialog; re-check right before the
-    # destructive `rsync --delete` actually starts.
-    if [ ! -d "$SNAP_PATH" ]; then
-        yad --error ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-            --title="$S_SNAP_SELECT_TITLE" \
-            --text="Snapshot no longer exists (removed by a concurrent prune?): $SNAP_PATH" \
-            --button="$S_BTN_OK" --width=420 --height=160 \
-            --fixed --center 2>/dev/null
-        return
-    fi
-
     open_log_window
     log "══════════════════════════════════════════"
     log " DistroClone — RESTORE FROM SNAPSHOT"
@@ -1967,12 +1845,6 @@ $S_CRON_HINT\n" \
     CRON_LINE="$CRON_EXPR /usr/bin/distroClone-backup --incremental-silent$NOTIFY_CMD"
     ( sudo crontab -l 2>/dev/null | grep -v "distroClone-backup"; echo "$CRON_LINE" ) | sudo crontab -
 
-    # Publish this user's config to the fixed root-owned system path — the
-    # only place --incremental-silent (running as root via cron) will ever
-    # read from. See the P0-2 fix note in the --incremental-silent block.
-    sudo mkdir -p /etc/distroclone-backup
-    sudo rsync -a "$CONF_FILE" /etc/distroclone-backup/settings.conf
-
     yad --info \
         --title="$S_CRON_SAVED_TITLE" \
         ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
@@ -2013,12 +1885,12 @@ $S_DELETE_WARN" \
             # Snapper format: N/snapshot (read-only subvolumes, foglie dell'albero)
             while IFS= read -r snap; do
                 sudo btrfs subvolume delete "$snap" 2>/dev/null || true
-            done < <(sudo find "$SNAPSHOTS_DIR" -mindepth 2 -maxdepth 2 -name 'snapshot' -type d 2>/dev/null | sort)
+            done < <(find "$SNAPSHOTS_DIR" -mindepth 2 -maxdepth 2 -name 'snapshot' -type d 2>/dev/null | sort)
             # Raw format: @* (vecchio v1.2.2)
             while IFS= read -r snap; do
                 sudo btrfs subvolume delete "$snap" 2>/dev/null || true
                 sudo rm -f "${snap}.meta" 2>/dev/null || true
-            done < <(sudo find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d 2>/dev/null | sort)
+            done < <(find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d 2>/dev/null | sort)
             # .snapshots è a sua volta un subvolume btrfs (snapper lo crea così)
             if sudo btrfs subvolume show "$SNAPSHOTS_DIR" >/dev/null 2>&1; then
                 sudo btrfs subvolume delete "$SNAPSHOTS_DIR" 2>/dev/null || true
@@ -2069,16 +1941,6 @@ do_settings() {
         return
     fi
 
-    # Fix (2026-08-27): the picker's default location already opens *inside*
-    # an existing "${DISTRO_ID}_backup" folder, so re-selecting that same
-    # folder (instead of stepping up to its parent) used to double the
-    # suffix on save — CACHE_BASE always appends "/${DISTRO_ID}_backup"
-    # again. Auto-strip it so the picked folder becomes the base either way.
-    NEW_DIR="${NEW_DIR%/}"
-    if [ "$(basename "$NEW_DIR")" = "${DISTRO_ID}_backup" ]; then
-        NEW_DIR="$(dirname "$NEW_DIR")"
-    fi
-
     # ── Passo 2: opzioni avanzate (max snapshot) ─────────────
     local ADV_RESULT
     ADV_RESULT=$(yad --form \
@@ -2112,7 +1974,7 @@ do_settings() {
     CACHE_BASE="${CACHE_BASE_DIR}/${DISTRO_ID}_backup"
     ROOTFS_CACHE="${CACHE_BASE}/.rootfs_cache"
     CACHE_META="${CACHE_BASE}/.backup_meta"
-    SNAPSHOTS_DIR="${ROOTFS_CACHE}/.snapshots"
+    SNAPSHOTS_DIR="${CACHE_BASE}/.snapshots"
 
     yad --info ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
         --title="$S_SETTINGS_TITLE" \

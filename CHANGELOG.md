@@ -7,6 +7,14 @@ Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
+Version 1.3.6 — 2026-10-03
+
+Fixed
+
+    Install banner (postinst) still showed version 1.3.4
+
+---
+
 Version 1.3.5 — 2026-10-01
 
 Added

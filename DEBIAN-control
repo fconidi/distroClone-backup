@@ -1,20 +1,19 @@
 Package: distroclone-backup
-Version: 1.3.6
+Version: 1.4.0
 Section: admin
 Priority: optional
 Architecture: all
-Depends: yad, rsync, imagemagick
-Recommends: distroclone, btrfs-progs, snapper
+Depends: yad, rsync, pkexec, util-linux, cron
+Recommends: distroclone, btrfs-progs, snapper, libnotify-bin
 Maintainer: Franco Conidi aka edmond <fconidi@gmail.com>
 Description: DistroClone Backup & Restore Tool
  Incremental rootfs backup and restore tool for Debian-based systems.
  Companion tool for DistroClone.
  .
- v1.3 — Native snapper integration on btrfs cache filesystems.
- Versioning of the rsync cache is managed via a dedicated snapper
- config ("distroclone-backup"). On non-btrfs filesystems falls back
- to plain rsync without versioning (no regression on ext4/xfs).
- Without snapper installed, behaves as v1.2.2 (raw btrfs snapshots).
+ Runs through polkit; no passwordless sudo rules are installed. The cache
+ is checked before a restore and other mounted filesystems are never
+ touched. On btrfs cache filesystems, versioning is managed through a
+ dedicated snapper config ("distroclone-backup"); other filesystems use
+ plain rsync without versioning.
  .
- Supports: English, Italiano, Deutsch, Français, Español.
-Installed-Size: 308
+ Supports: English, Italiano, Deutsch, Français, Español, Русский.

@@ -7,6 +7,56 @@ Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
+Version 1.4.0 — 2026-11-07
+
+Security
+
+    Administrator rights now come from polkit (pkexec); the package no longer
+    installs passwordless sudo rules. An upgrade removes the old
+    /etc/sudoers.d/distroclone-backup file.
+    Settings moved to the root-owned /etc/distroclone-backup/settings.conf and
+    are parsed as data. The scheduled job and the interface no longer run code
+    taken from a user's home or from the backup disk.
+    Cache metadata and snapshot metadata are parsed, not sourced; text coming
+    from the disk is escaped before it is shown.
+    The log file is no longer world-writable.
+
+Fixed
+
+    Restore never enters filesystems mounted on the running system (separate
+    /boot, /data, /srv...): --delete used to wipe them.
+    Restore is refused for a missing, incomplete or foreign cache, and /home
+    is restored only if the backup was made with /home.
+    The cache folder itself is excluded, so a cache outside /mnt and /media can
+    no longer copy itself or be deleted by a restore.
+    Locations on FAT, exFAT or NTFS are refused; a first full backup checks the
+    free space.
+    "Delete Cache" now finds snapper snapshots and reports failure instead of
+    claiming success.
+    Snapper output is read as CSV (distribution, date and size were empty).
+    Old snapshots are pruned only after a successful copy.
+    One operation at a time (lock shared by the interface and the schedule).
+    Progress lines no longer pile up in a single log line.
+    The scheduled job honours the "include /home" choice, no longer prints
+    shell errors into the cron mail, and notifies the logged-in users.
+    The schedule line no longer embeds translated text; the weekday is chosen
+    by position, not by its translated name.
+    Language detection follows LC_ALL, LC_MESSAGES and LANG.
+    Unknown command-line options print help instead of opening the interface.
+
+Changed
+
+    Restore and deletion need a confirmation box to be ticked.
+    The log window has a Stop button that cancels the transfer; errors show
+    the last lines of the log.
+    Restore refreshes the boot files (update-initramfs, update-grub).
+    Keyboard shortcuts on the buttons; fixed colours replaced by theme colours.
+    Extra exclude patterns can be listed in /etc/distroclone-backup/exclude.list.
+    imagemagick is no longer needed; the schedule needs cron.
+    New translated messages (EN, IT, DE, FR, ES, RU).
+
+---
+
 Version 1.3.6 — 2026-10-03
 
 Fixed

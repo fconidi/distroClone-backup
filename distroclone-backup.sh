@@ -1,24 +1,38 @@
 #!/bin/bash
 # ============================================================
-#  DistroClone Backup & Restore — v1.3.1
+#  DistroClone Backup & Restore
 #  Package: distroclone-backup
-#  Usage: distroclone-backup   (alias di /usr/bin/distroClone-backup)
-#  Cron:  distroclone-backup --incremental-silent
 #
-#  v1.3 — Versioning su cache btrfs gestita via snapper (config
-#  dedicato "distroclone-backup"). Su filesystem non btrfs:
-#  rsync classico, nessuna regressione. Senza snapper: fallback
-#  a snapshot btrfs raw (comportamento v1.2.2).
+#  Usage:  distroclone-backup                  graphical interface
+#          distroclone-backup --incremental-silent
+#                                              incremental backup for cron (root)
+#          distroclone-backup --help | --version
+#
+#  The interface runs through polkit (pkexec) as root; the cron mode
+#  reads only the root-owned /etc/distroclone-backup/settings.conf.
+#  Versioning on a btrfs cache is managed through snapper (config
+#  "distroclone-backup") with a fallback to raw btrfs snapshots; other
+#  filesystems use plain rsync.
 # ============================================================
 
+DCB_VERSION="1.4.0"
+DCB_SELF_INSTALLED="/usr/share/distroclone-backup/distroclone-backup.sh"
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 set -o pipefail
 trap '' PIPE
+# bash 5.2 treats an unquoted "&" in a replacement as the matched text.
+shopt -u patsub_replacement 2>/dev/null
 
 # ════════════════════════════════════════════════════════════
 #  LANGUAGE DETECTION & STRINGS
 # ════════════════════════════════════════════════════════════
 detect_language() {
-    local lang="${LANG:-${LANGUAGE:-en}}"
+    local lang="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+    if [ -z "$lang" ]; then
+        lang="${LANGUAGE%%:*}"
+    fi
     case "${lang:0:2}" in
         it) echo "it" ;;
         de) echo "de" ;;
@@ -93,7 +107,7 @@ load_strings() {
         S_RESTORE_INFO_DISTRO="Distro"
         S_RESTORE_INFO_KERNEL="Kernel"
         S_RESTORE_INFO_SIZE="Dim."
-        S_RESTORE_CONFIRM="<span color='#c62828'>Confermi il ripristino?</span>"
+        S_RESTORE_CONFIRM="<b>Confermi il ripristino?</b>"
         S_RESTORE_LOG_TITLE="DistroClone — Avvio RIPRISTINO"
         S_RESTORE_LOG_FROM="Da cache"
         S_RESTORE_LOG_TO="Verso"
@@ -103,16 +117,16 @@ load_strings() {
         S_RESTORE_OK_TEXT="<big><b>✓ Ripristino completato!</b></big>"
         S_RESTORE_OK_DATE="Il sistema è stato ripristinato al backup del"
         S_RESTORE_OK_PROTECTED="<b>Protetti:</b> /home ✓   /root ✓   /boot/efi ✓"
-        S_RESTORE_OK_REBOOT="<span color='#c62828'><b>Riavviare il sistema.</b></span>"
+        S_RESTORE_OK_REBOOT="<b><b>Riavviare il sistema.</b></b>"
         S_RESTORE_ERR_TITLE="DistroClone — Errore Ripristino"
         S_RESTORE_ERR_TEXT="<b>✗ Ripristino fallito!</b>"
 
         S_CRON_DIALOG_TITLE="DistroClone — Pianifica Backup"
         S_CRON_DIALOG_HEADER="<big><b>Pianificazione Backup Automatico</b></big>"
-        S_CRON_STATUS_ACTIVE="<span color='#2e7d32'>● Pianificazione attiva</span>"
-        S_CRON_STATUS_NONE="<span color='#c62828'>● Nessuna pianificazione attiva</span>"
+        S_CRON_STATUS_ACTIVE="● Pianificazione attiva"
+        S_CRON_STATUS_NONE="<b>● Nessuna pianificazione attiva</b>"
         S_CRON_STATUS_NOCRON="<small>Nessun cronjob configurato</small>"
-        S_CRON_HINT="<span color='#666666'><small>Il backup incrementale verrà eseguito automaticamente.\nRichiede che la cache esista (esegui prima Backup completo).</small></span>"
+        S_CRON_HINT="<small>Il backup incrementale verrà eseguito automaticamente.\nRichiede che la cache esista (esegui prima Backup completo).</small>"
         S_CRON_FIELD_FREQ="<b>Frequenza</b>"
         S_CRON_FIELD_DAY="<b>Giorno</b> (se settimanale)"
         S_CRON_FIELD_HOUR="<b>Ora esecuzione</b> (0-23)"
@@ -136,14 +150,14 @@ load_strings() {
         S_DELETE_DATE="Data"
         S_DELETE_SIZE="Dim."
         S_DELETE_PATH="Percorso"
-        S_DELETE_WARN="<span color='#c62828'>Irreversibile.\nVerrà rimossa anche la pianificazione cronjob.</span>"
+        S_DELETE_WARN="<b>Irreversibile.\nVerrà rimossa anche la pianificazione cronjob.</b>"
         S_DELETE_OK_TITLE="DistroClone — Cache Eliminata"
         S_DELETE_OK_TEXT="✓ Cache eliminata.\n✓ Cronjob rimosso."
 
         S_SUDO_NEEDED="Permessi sudo necessari"
         S_LOG_CHECK="Verifica con"
         S_HOME_INCLUDE="Includi /home nel backup"
-        S_HOME_INCLUDE_WARN="<span color='#e65100'><small>⚠ Aumenta notevolmente dimensioni e tempi</small></span>"
+        S_HOME_INCLUDE_WARN="<small>⚠ Aumenta notevolmente dimensioni e tempi</small>"
         S_HOME_INCLUDED="● /home inclusa nel backup"
         S_HOME_EXCLUDED="● /home esclusa (solo sistema)"
         S_BACKUP_OPT_TITLE="Opzioni Backup"
@@ -152,9 +166,9 @@ load_strings() {
         S_SETTINGS_TITLE="DistroClone — Impostazioni"
         S_SETTINGS_HEADER="<big><b>Impostazioni</b></big>"
         S_SETTINGS_CACHE_DIR="<b>Directory cache backup</b>"
-        S_SETTINGS_CACHE_HINT="<span color='#666666'><small>Default: /mnt — Può essere un disco esterno, NFS, ecc.\nVerrà creata la sottocartella .rootfs_cache</small></span>"
+        S_SETTINGS_CACHE_HINT="<small>Default: /mnt — Può essere un disco esterno, NFS, ecc.\nVerrà creata la sottocartella .rootfs_cache</small>"
         S_SETTINGS_SAVED="✓ Impostazioni salvate."
-        S_SETTINGS_WARN_DIR="<span color='#c62828'>Directory non valida o non accessibile.</span>"
+        S_SETTINGS_WARN_DIR="<b>Directory non valida o non accessibile.</b>"
         S_SETTINGS_MAX_SNAPS="<b>Max snapshot da mantenere</b> (0 = disabilitato):"
 
         S_BTRFS_AVAILABLE="● Versioning attivo (btrfs)"
@@ -171,6 +185,22 @@ load_strings() {
         S_SNAP_NO_SNAPS="Nessuno snapshot disponibile."
         S_SNAP_ERR_TITLE="DistroClone — Errore Snapshot"
         S_SNAP_ERR_TEXT="<b>✗ Operazione snapshot fallita!</b>"
+
+        # ── added in 1.4.0 ──
+        S_ERR_BUSY="Un'altra operazione di backup o ripristino è già in corso."
+        S_ERR_NO_SPACE="Spazio libero insufficiente per un backup completo nella posizione scelta."
+        S_ERR_FS="La posizione della cache usa un filesystem senza permessi Linux (FAT, exFAT o NTFS). Scegli un'altra posizione."
+        S_ERR_CACHE_INCOMPLETE="La cache di backup manca, è incompleta o appartiene a un'altra distribuzione. Ripristino rifiutato."
+        S_ERR_NO_HOME_BACKUP="Questo backup non contiene /home: impossibile ripristinare /home."
+        S_ERR_AUTH="Autorizzazione di amministratore non riuscita o annullata."
+        S_ERR_UNDERSTAND="Spunta prima la casella di conferma per continuare."
+        S_UNDERSTAND_RESTORE="Ho capito che i file di sistema verranno sovrascritti"
+        S_UNDERSTAND_DELETE="Ho capito che l'operazione non si può annullare"
+        S_BTN_STOP="Ferma!gtk-stop:1"
+        S_OP_CANCELLED="Operazione annullata."
+        S_DELETE_ERR="Impossibile eliminare completamente la cache."
+        S_VERSIONING_LABEL="Versioning"
+        S_STATUS_LABEL="Stato"
         ;;
 
     # ── DEUTSCH ──────────────────────────────────────────────
@@ -233,7 +263,7 @@ load_strings() {
         S_RESTORE_INFO_DISTRO="Distro"
         S_RESTORE_INFO_KERNEL="Kernel"
         S_RESTORE_INFO_SIZE="Größe"
-        S_RESTORE_CONFIRM="<span color='#c62828'>Wiederherstellung bestätigen?</span>"
+        S_RESTORE_CONFIRM="<b>Wiederherstellung bestätigen?</b>"
         S_RESTORE_LOG_TITLE="DistroClone — WIEDERHERSTELLUNG"
         S_RESTORE_LOG_FROM="Von Cache"
         S_RESTORE_LOG_TO="Nach"
@@ -243,16 +273,16 @@ load_strings() {
         S_RESTORE_OK_TEXT="<big><b>✓ Wiederherstellung abgeschlossen!</b></big>"
         S_RESTORE_OK_DATE="System wiederhergestellt vom Backup:"
         S_RESTORE_OK_PROTECTED="<b>Geschützt:</b> /home ✓   /root ✓   /boot/efi ✓"
-        S_RESTORE_OK_REBOOT="<span color='#c62828'><b>Bitte System neu starten.</b></span>"
+        S_RESTORE_OK_REBOOT="<b><b>Bitte System neu starten.</b></b>"
         S_RESTORE_ERR_TITLE="DistroClone — Wiederherstellungsfehler"
         S_RESTORE_ERR_TEXT="<b>✗ Wiederherstellung fehlgeschlagen!</b>"
 
         S_CRON_DIALOG_TITLE="DistroClone — Backup planen"
         S_CRON_DIALOG_HEADER="<big><b>Automatisches Backup planen</b></big>"
-        S_CRON_STATUS_ACTIVE="<span color='#2e7d32'>● Planung aktiv</span>"
-        S_CRON_STATUS_NONE="<span color='#c62828'>● Keine Planung aktiv</span>"
+        S_CRON_STATUS_ACTIVE="● Planung aktiv"
+        S_CRON_STATUS_NONE="<b>● Keine Planung aktiv</b>"
         S_CRON_STATUS_NOCRON="<small>Kein Cronjob konfiguriert</small>"
-        S_CRON_HINT="<span color='#666666'><small>Backup wird automatisch ausgeführt.\nErfordert vorhandenen Cache (zuerst Vollbackup).</small></span>"
+        S_CRON_HINT="<small>Backup wird automatisch ausgeführt.\nErfordert vorhandenen Cache (zuerst Vollbackup).</small>"
         S_CRON_FIELD_FREQ="<b>Häufigkeit</b>"
         S_CRON_FIELD_DAY="<b>Wochentag</b> (wenn wöchentlich)"
         S_CRON_FIELD_HOUR="<b>Ausführungszeit</b> (0-23)"
@@ -276,14 +306,14 @@ load_strings() {
         S_DELETE_DATE="Datum"
         S_DELETE_SIZE="Größe"
         S_DELETE_PATH="Pfad"
-        S_DELETE_WARN="<span color='#c62828'>Unwiderruflich.\nCronjob wird ebenfalls entfernt.</span>"
+        S_DELETE_WARN="<b>Unwiderruflich.\nCronjob wird ebenfalls entfernt.</b>"
         S_DELETE_OK_TITLE="DistroClone — Cache gelöscht"
         S_DELETE_OK_TEXT="✓ Cache gelöscht.\n✓ Cronjob entfernt."
 
         S_SUDO_NEEDED="Sudo-Berechtigung erforderlich"
         S_LOG_CHECK="Überprüfen mit"
         S_HOME_INCLUDE="/home in Backup einbeziehen"
-        S_HOME_INCLUDE_WARN="<span color='#e65100'><small>⚠ Erhöht Größe und Dauer erheblich</small></span>"
+        S_HOME_INCLUDE_WARN="<small>⚠ Erhöht Größe und Dauer erheblich</small>"
         S_HOME_INCLUDED="● /home im Backup enthalten"
         S_HOME_EXCLUDED="● /home ausgeschlossen (nur System)"
         S_BACKUP_OPT_TITLE="Backup-Optionen"
@@ -292,9 +322,9 @@ load_strings() {
         S_SETTINGS_TITLE="DistroClone — Einstellungen"
         S_SETTINGS_HEADER="<big><b>Einstellungen</b></big>"
         S_SETTINGS_CACHE_DIR="<b>Backup-Cache-Verzeichnis</b>"
-        S_SETTINGS_CACHE_HINT="<span color='#666666'><small>Standard: /mnt — Kann externe Festplatte, NFS usw. sein.\nUnterordner .rootfs_cache wird erstellt</small></span>"
+        S_SETTINGS_CACHE_HINT="<small>Standard: /mnt — Kann externe Festplatte, NFS usw. sein.\nUnterordner .rootfs_cache wird erstellt</small>"
         S_SETTINGS_SAVED="✓ Einstellungen gespeichert."
-        S_SETTINGS_WARN_DIR="<span color='#c62828'>Ungültiges oder nicht zugängliches Verzeichnis.</span>"
+        S_SETTINGS_WARN_DIR="<b>Ungültiges oder nicht zugängliches Verzeichnis.</b>"
         S_SETTINGS_MAX_SNAPS="<b>Max. Snapshots behalten</b> (0 = deaktiviert):"
 
         S_BTRFS_AVAILABLE="● Versionierung aktiv (btrfs)"
@@ -311,6 +341,22 @@ load_strings() {
         S_SNAP_NO_SNAPS="Keine Snapshots verfügbar."
         S_SNAP_ERR_TITLE="DistroClone — Snapshot-Fehler"
         S_SNAP_ERR_TEXT="<b>✗ Snapshot-Vorgang fehlgeschlagen!</b>"
+
+        # ── added in 1.4.0 ──
+        S_ERR_BUSY="Ein anderer Sicherungs- oder Wiederherstellungsvorgang läuft bereits."
+        S_ERR_NO_SPACE="Nicht genügend freier Speicherplatz für eine vollständige Sicherung am gewählten Ort."
+        S_ERR_FS="Der Cache-Ort verwendet ein Dateisystem ohne Linux-Berechtigungen (FAT, exFAT oder NTFS). Wählen Sie einen anderen Ort."
+        S_ERR_CACHE_INCOMPLETE="Der Sicherungs-Cache fehlt, ist unvollständig oder stammt von einer anderen Distribution. Wiederherstellung abgelehnt."
+        S_ERR_NO_HOME_BACKUP="Diese Sicherung enthält kein /home; /home kann nicht wiederhergestellt werden."
+        S_ERR_AUTH="Die Administrator-Autorisierung ist fehlgeschlagen oder wurde abgebrochen."
+        S_ERR_UNDERSTAND="Aktivieren Sie zuerst das Bestätigungsfeld, um fortzufahren."
+        S_UNDERSTAND_RESTORE="Mir ist bewusst, dass Systemdateien überschrieben werden"
+        S_UNDERSTAND_DELETE="Mir ist bewusst, dass dies nicht rückgängig gemacht werden kann"
+        S_BTN_STOP="Stopp!gtk-stop:1"
+        S_OP_CANCELLED="Vorgang abgebrochen."
+        S_DELETE_ERR="Der Cache konnte nicht vollständig gelöscht werden."
+        S_VERSIONING_LABEL="Versionierung"
+        S_STATUS_LABEL="Status"
         ;;
 
     # ── FRANÇAIS ─────────────────────────────────────────────
@@ -373,7 +419,7 @@ load_strings() {
         S_RESTORE_INFO_DISTRO="Distro"
         S_RESTORE_INFO_KERNEL="Noyau"
         S_RESTORE_INFO_SIZE="Taille"
-        S_RESTORE_CONFIRM="<span color='#c62828'>Confirmer la restauration?</span>"
+        S_RESTORE_CONFIRM="<b>Confirmer la restauration?</b>"
         S_RESTORE_LOG_TITLE="DistroClone — RESTAURATION"
         S_RESTORE_LOG_FROM="Du cache"
         S_RESTORE_LOG_TO="Vers"
@@ -383,16 +429,16 @@ load_strings() {
         S_RESTORE_OK_TEXT="<big><b>✓ Restauration terminée!</b></big>"
         S_RESTORE_OK_DATE="Système restauré depuis la sauvegarde du"
         S_RESTORE_OK_PROTECTED="<b>Protégés:</b> /home ✓   /root ✓   /boot/efi ✓"
-        S_RESTORE_OK_REBOOT="<span color='#c62828'><b>Veuillez redémarrer le système.</b></span>"
+        S_RESTORE_OK_REBOOT="<b><b>Veuillez redémarrer le système.</b></b>"
         S_RESTORE_ERR_TITLE="DistroClone — Erreur de restauration"
         S_RESTORE_ERR_TEXT="<b>✗ Restauration échouée!</b>"
 
         S_CRON_DIALOG_TITLE="DistroClone — Planifier la sauvegarde"
         S_CRON_DIALOG_HEADER="<big><b>Planification automatique</b></big>"
-        S_CRON_STATUS_ACTIVE="<span color='#2e7d32'>● Planification active</span>"
-        S_CRON_STATUS_NONE="<span color='#c62828'>● Aucune planification active</span>"
+        S_CRON_STATUS_ACTIVE="● Planification active"
+        S_CRON_STATUS_NONE="<b>● Aucune planification active</b>"
         S_CRON_STATUS_NOCRON="<small>Aucun cronjob configuré</small>"
-        S_CRON_HINT="<span color='#666666'><small>La sauvegarde sera exécutée automatiquement.\nNécessite un cache existant (effectuez d'abord une sauvegarde complète).</small></span>"
+        S_CRON_HINT="<small>La sauvegarde sera exécutée automatiquement.\nNécessite un cache existant (effectuez d'abord une sauvegarde complète).</small>"
         S_CRON_FIELD_FREQ="<b>Fréquence</b>"
         S_CRON_FIELD_DAY="<b>Jour</b> (si hebdomadaire)"
         S_CRON_FIELD_HOUR="<b>Heure d'exécution</b> (0-23)"
@@ -416,14 +462,14 @@ load_strings() {
         S_DELETE_DATE="Date"
         S_DELETE_SIZE="Taille"
         S_DELETE_PATH="Chemin"
-        S_DELETE_WARN="<span color='#c62828'>Irréversible.\nLa tâche planifiée sera également supprimée.</span>"
+        S_DELETE_WARN="<b>Irréversible.\nLa tâche planifiée sera également supprimée.</b>"
         S_DELETE_OK_TITLE="DistroClone — Cache supprimé"
         S_DELETE_OK_TEXT="✓ Cache supprimé.\n✓ Tâche planifiée supprimée."
 
         S_SUDO_NEEDED="Permissions sudo requises"
         S_LOG_CHECK="Vérifier avec"
         S_HOME_INCLUDE="Inclure /home dans la sauvegarde"
-        S_HOME_INCLUDE_WARN="<span color='#e65100'><small>⚠ Augmente considérablement la taille et la durée</small></span>"
+        S_HOME_INCLUDE_WARN="<small>⚠ Augmente considérablement la taille et la durée</small>"
         S_HOME_INCLUDED="● /home inclus dans la sauvegarde"
         S_HOME_EXCLUDED="● /home exclu (système uniquement)"
         S_BACKUP_OPT_TITLE="Options de sauvegarde"
@@ -432,9 +478,9 @@ load_strings() {
         S_SETTINGS_TITLE="DistroClone — Paramètres"
         S_SETTINGS_HEADER="<big><b>Paramètres</b></big>"
         S_SETTINGS_CACHE_DIR="<b>Répertoire du cache de sauvegarde</b>"
-        S_SETTINGS_CACHE_HINT="<span color='#666666'><small>Défaut: /mnt — Peut être un disque externe, NFS, etc.\nLe sous-dossier .rootfs_cache sera créé</small></span>"
+        S_SETTINGS_CACHE_HINT="<small>Défaut: /mnt — Peut être un disque externe, NFS, etc.\nLe sous-dossier .rootfs_cache sera créé</small>"
         S_SETTINGS_SAVED="✓ Paramètres enregistrés."
-        S_SETTINGS_WARN_DIR="<span color='#c62828'>Répertoire invalide ou inaccessible.</span>"
+        S_SETTINGS_WARN_DIR="<b>Répertoire invalide ou inaccessible.</b>"
         S_SETTINGS_MAX_SNAPS="<b>Nombre max de snapshots à conserver</b> (0 = désactivé) :"
 
         S_BTRFS_AVAILABLE="● Versionnage actif (btrfs)"
@@ -451,6 +497,22 @@ load_strings() {
         S_SNAP_NO_SNAPS="Aucun snapshot disponible."
         S_SNAP_ERR_TITLE="DistroClone — Erreur snapshot"
         S_SNAP_ERR_TEXT="<b>✗ Opération snapshot échouée !</b>"
+
+        # ── added in 1.4.0 ──
+        S_ERR_BUSY="Une autre opération de sauvegarde ou de restauration est déjà en cours."
+        S_ERR_NO_SPACE="Espace libre insuffisant pour une sauvegarde complète à l'emplacement choisi."
+        S_ERR_FS="L'emplacement du cache utilise un système de fichiers sans permissions Linux (FAT, exFAT ou NTFS). Choisissez un autre emplacement."
+        S_ERR_CACHE_INCOMPLETE="Le cache de sauvegarde est absent, incomplet ou provient d'une autre distribution. Restauration refusée."
+        S_ERR_NO_HOME_BACKUP="Cette sauvegarde ne contient pas /home : impossible de restaurer /home."
+        S_ERR_AUTH="L'autorisation administrateur a échoué ou a été annulée."
+        S_ERR_UNDERSTAND="Cochez d'abord la case de confirmation pour continuer."
+        S_UNDERSTAND_RESTORE="Je comprends que les fichiers système seront écrasés"
+        S_UNDERSTAND_DELETE="Je comprends que cette action est irréversible"
+        S_BTN_STOP="Arrêter!gtk-stop:1"
+        S_OP_CANCELLED="Opération annulée."
+        S_DELETE_ERR="Le cache n'a pas pu être entièrement supprimé."
+        S_VERSIONING_LABEL="Versionnage"
+        S_STATUS_LABEL="État"
         ;;
 
     # ── ESPAÑOL ──────────────────────────────────────────────
@@ -513,7 +575,7 @@ load_strings() {
         S_RESTORE_INFO_DISTRO="Distro"
         S_RESTORE_INFO_KERNEL="Kernel"
         S_RESTORE_INFO_SIZE="Tamaño"
-        S_RESTORE_CONFIRM="<span color='#c62828'>¿Confirmar la restauración?</span>"
+        S_RESTORE_CONFIRM="<b>¿Confirmar la restauración?</b>"
         S_RESTORE_LOG_TITLE="DistroClone — RESTAURACIÓN EN CURSO"
         S_RESTORE_LOG_FROM="Origen (caché)"
         S_RESTORE_LOG_TO="Destino"
@@ -523,16 +585,16 @@ load_strings() {
         S_RESTORE_OK_TEXT="<big><b>✓ Restauración finalizada!</b></big>"
         S_RESTORE_OK_DATE="Sistema restaurado desde la copia del"
         S_RESTORE_OK_PROTECTED="<b>Sin cambios:</b> /home ✓   /root ✓   /boot/efi ✓"
-        S_RESTORE_OK_REBOOT="<span color='#c62828'><b>Es necesario reiniciar el sistema.</b></span>"
+        S_RESTORE_OK_REBOOT="<b><b>Es necesario reiniciar el sistema.</b></b>"
         S_RESTORE_ERR_TITLE="DistroClone — Error en la restauración"
         S_RESTORE_ERR_TEXT="<b>✗ La restauración ha fallado!</b>"
 
         S_CRON_DIALOG_TITLE="DistroClone — Programar copia de seguridad"
         S_CRON_DIALOG_HEADER="<big><b>Programar copia de seguridad automática</b></big>"
-        S_CRON_STATUS_ACTIVE="<span color='#2e7d32'>● Tarea programada activa</span>"
-        S_CRON_STATUS_NONE="<span color='#c62828'>● Sin tarea programada</span>"
+        S_CRON_STATUS_ACTIVE="● Tarea programada activa"
+        S_CRON_STATUS_NONE="<b>● Sin tarea programada</b>"
         S_CRON_STATUS_NOCRON="<small>No hay ninguna tarea programada</small>"
-        S_CRON_HINT="<span color='#666666'><small>La copia se ejecutará automáticamente en los horarios indicados.\nEs necesario tener un caché disponible (realice primero una copia completa).</small></span>"
+        S_CRON_HINT="<small>La copia se ejecutará automáticamente en los horarios indicados.\nEs necesario tener un caché disponible (realice primero una copia completa).</small>"
         S_CRON_FIELD_FREQ="<b>Frecuencia</b>"
         S_CRON_FIELD_DAY="<b>Día de la semana</b> (si es semanal)"
         S_CRON_FIELD_HOUR="<b>Hora de ejecución</b> (0-23)"
@@ -556,14 +618,14 @@ load_strings() {
         S_DELETE_DATE="Fecha"
         S_DELETE_SIZE="Tamaño"
         S_DELETE_PATH="Ruta"
-        S_DELETE_WARN="<span color='#c62828'>Esta acción es irreversible.\nLa tarea programada también será eliminada.</span>"
+        S_DELETE_WARN="<b>Esta acción es irreversible.\nLa tarea programada también será eliminada.</b>"
         S_DELETE_OK_TITLE="DistroClone — Caché borrado"
         S_DELETE_OK_TEXT="✓ Caché borrado correctamente.\n✓ Tarea programada eliminada."
 
         S_SUDO_NEEDED="Se requieren permisos de administrador (sudo)"
         S_LOG_CHECK="Comprobar con"
         S_HOME_INCLUDE="Incluir /home en la copia de seguridad"
-        S_HOME_INCLUDE_WARN="<span color='#e65100'><small>⚠ Aumenta considerablemente el tamaño y el tiempo</small></span>"
+        S_HOME_INCLUDE_WARN="<small>⚠ Aumenta considerablemente el tamaño y el tiempo</small>"
         S_HOME_INCLUDED="● /home incluido en la copia"
         S_HOME_EXCLUDED="● /home excluido (solo sistema)"
         S_BACKUP_OPT_TITLE="Opciones de copia de seguridad"
@@ -572,9 +634,9 @@ load_strings() {
         S_SETTINGS_TITLE="DistroClone — Ajustes"
         S_SETTINGS_HEADER="<big><b>Ajustes</b></big>"
         S_SETTINGS_CACHE_DIR="<b>Directorio de caché de copia de seguridad</b>"
-        S_SETTINGS_CACHE_HINT="<span color='#666666'><small>Predeterminado: /mnt — Puede ser disco externo, NFS, etc.\nSe creará la subcarpeta .rootfs_cache</small></span>"
+        S_SETTINGS_CACHE_HINT="<small>Predeterminado: /mnt — Puede ser disco externo, NFS, etc.\nSe creará la subcarpeta .rootfs_cache</small>"
         S_SETTINGS_SAVED="✓ Ajustes guardados."
-        S_SETTINGS_WARN_DIR="<span color='#c62828'>Directorio no válido o inaccesible.</span>"
+        S_SETTINGS_WARN_DIR="<b>Directorio no válido o inaccesible.</b>"
         S_SETTINGS_MAX_SNAPS="<b>Máx. snapshots a conservar</b> (0 = desactivado):"
 
         S_BTRFS_AVAILABLE="● Versionado activo (btrfs)"
@@ -591,6 +653,22 @@ load_strings() {
         S_SNAP_NO_SNAPS="No hay snapshots disponibles."
         S_SNAP_ERR_TITLE="DistroClone — Error de Snapshot"
         S_SNAP_ERR_TEXT="<b>✗ ¡Operación de snapshot fallida!</b>"
+
+        # ── added in 1.4.0 ──
+        S_ERR_BUSY="Ya hay otra operación de copia de seguridad o restauración en curso."
+        S_ERR_NO_SPACE="No hay espacio libre suficiente para una copia completa en la ubicación elegida."
+        S_ERR_FS="La ubicación de la caché usa un sistema de archivos sin permisos de Linux (FAT, exFAT o NTFS). Elija otra ubicación."
+        S_ERR_CACHE_INCOMPLETE="La caché de copia de seguridad falta, está incompleta o es de otra distribución. Restauración rechazada."
+        S_ERR_NO_HOME_BACKUP="Esta copia no contiene /home, por lo que no se puede restaurar /home."
+        S_ERR_AUTH="La autorización de administrador falló o se canceló."
+        S_ERR_UNDERSTAND="Marque primero la casilla de confirmación para continuar."
+        S_UNDERSTAND_RESTORE="Entiendo que los archivos del sistema se sobrescribirán"
+        S_UNDERSTAND_DELETE="Entiendo que esta acción no se puede deshacer"
+        S_BTN_STOP="Detener!gtk-stop:1"
+        S_OP_CANCELLED="Operación cancelada."
+        S_DELETE_ERR="No se pudo eliminar completamente la caché."
+        S_VERSIONING_LABEL="Versionado"
+        S_STATUS_LABEL="Estado"
         ;;
 
     # ── RUSSIAN — translation by Андрей Ступак (Andrey Stupak) ──
@@ -653,7 +731,7 @@ load_strings() {
         S_RESTORE_INFO_DISTRO="Дистрибутив"
         S_RESTORE_INFO_KERNEL="Ядро"
         S_RESTORE_INFO_SIZE="Размер"
-        S_RESTORE_CONFIRM="<span color='#c62828'>Подтвердить восстановление?</span>"
+        S_RESTORE_CONFIRM="<b>Подтвердить восстановление?</b>"
         S_RESTORE_LOG_TITLE="DistroClone — ВОССТАНОВЛЕНИЕ"
         S_RESTORE_LOG_FROM="Из кэша"
         S_RESTORE_LOG_TO="В"
@@ -663,16 +741,16 @@ load_strings() {
         S_RESTORE_OK_TEXT="<big><b>✓ Восстановление завершено!</b></big>"
         S_RESTORE_OK_DATE="Система восстановлена из резервной копии от"
         S_RESTORE_OK_PROTECTED="<b>Защищено:</b> /home ✓   /root ✓   /boot/efi ✓"
-        S_RESTORE_OK_REBOOT="<span color='#c62828'><b>Пожалуйста, перезагрузите систему.</b></span>"
+        S_RESTORE_OK_REBOOT="<b><b>Пожалуйста, перезагрузите систему.</b></b>"
         S_RESTORE_ERR_TITLE="DistroClone — Ошибка восстановления"
         S_RESTORE_ERR_TEXT="<b>✗ Сбой восстановления!</b>"
 
         S_CRON_DIALOG_TITLE="DistroClone — Резервное копирование по расписанию"
         S_CRON_DIALOG_HEADER="<big><b>Настроить расписание автоматического резервного копирования</b></big>"
-        S_CRON_STATUS_ACTIVE="<span color='#2e7d32'>● Расписание активно</span>"
-        S_CRON_STATUS_NONE="<span color='#c62828'>● Нет активного расписания</span>"
+        S_CRON_STATUS_ACTIVE="● Расписание активно"
+        S_CRON_STATUS_NONE="<b>● Нет активного расписания</b>"
         S_CRON_STATUS_NOCRON="<small>Cron-задача не настроена</small>"
-        S_CRON_HINT="<span color='#666666'><small>Резервное копирование будет выполняться автоматически по расписанию.\nТребуется существующий кэш (сначала выполните полное резервное копирование).</small></span>"
+        S_CRON_HINT="<small>Резервное копирование будет выполняться автоматически по расписанию.\nТребуется существующий кэш (сначала выполните полное резервное копирование).</small>"
         S_CRON_FIELD_FREQ="<b>Частота</b>"
         S_CRON_FIELD_DAY="<b>День недели</b> (для еженедельного)"
         S_CRON_FIELD_HOUR="<b>Время запуска</b> (0-23)"
@@ -696,14 +774,14 @@ load_strings() {
         S_DELETE_DATE="Дата"
         S_DELETE_SIZE="Размер"
         S_DELETE_PATH="Путь"
-        S_DELETE_WARN="<span color='#c62828'>Действие необратимо.\nРасписание Cron-задач также будет удалено.</span>"
+        S_DELETE_WARN="<b>Действие необратимо.\nРасписание Cron-задач также будет удалено.</b>"
         S_DELETE_OK_TITLE="DistroClone — Кэш удален"
         S_DELETE_OK_TEXT="✓ Кэш удален.\n✓ Cron-задача удалена."
 
         S_SUDO_NEEDED="Требуются права sudo"
         S_LOG_CHECK="Проверить с помощью"
         S_HOME_INCLUDE="Включить /home в резервную копию"
-        S_HOME_INCLUDE_WARN="<span color='#e65100'><small>⚠ Значительно увеличивает размер и время создания копии</small></span>"
+        S_HOME_INCLUDE_WARN="<small>⚠ Значительно увеличивает размер и время создания копии</small>"
         S_HOME_INCLUDED="● /home включен в резервную копию"
         S_HOME_EXCLUDED="● /home исключен (только система)"
         S_BACKUP_OPT_TITLE="Параметры резервного копирования"
@@ -712,9 +790,9 @@ load_strings() {
         S_SETTINGS_TITLE="DistroClone — Настройки"
         S_SETTINGS_HEADER="<big><b>Настройки</b></big>"
         S_SETTINGS_CACHE_DIR="<b>Каталог кэша резервных копий</b>"
-        S_SETTINGS_CACHE_HINT="<span color='#666666'><small>По умолчанию: /mnt — может быть внешним диском, NFS и т. д.\nБудет создана подпапка .rootfs_cache</small></span>"
+        S_SETTINGS_CACHE_HINT="<small>По умолчанию: /mnt — может быть внешним диском, NFS и т. д.\nБудет создана подпапка .rootfs_cache</small>"
         S_SETTINGS_SAVED="✓ Настройки сохранены."
-        S_SETTINGS_WARN_DIR="<span color='#c62828'>Недопустимый или недоступный каталог.</span>"
+        S_SETTINGS_WARN_DIR="<b>Недопустимый или недоступный каталог.</b>"
         S_SETTINGS_MAX_SNAPS="<b>Макс. количество сохраняемых снимков</b> (0 = отключено):"
 
         S_BTRFS_AVAILABLE="● Версионирование включено (btrfs)"
@@ -731,6 +809,22 @@ load_strings() {
         S_SNAP_NO_SNAPS="Нет доступных снимков."
         S_SNAP_ERR_TITLE="DistroClone — Ошибка снимка"
         S_SNAP_ERR_TEXT="<b>✗ Операция со снимком завершилась ошибкой!</b>"
+
+        # ── added in 1.4.0 ──
+        S_ERR_BUSY="Другая операция резервного копирования или восстановления уже выполняется."
+        S_ERR_NO_SPACE="Недостаточно свободного места для полного резервного копирования в выбранном месте."
+        S_ERR_FS="Расположение кэша использует файловую систему без прав Linux (FAT, exFAT или NTFS). Выберите другое расположение."
+        S_ERR_CACHE_INCOMPLETE="Кэш резервной копии отсутствует, неполон или относится к другому дистрибутиву. Восстановление отклонено."
+        S_ERR_NO_HOME_BACKUP="Эта копия не содержит /home, поэтому восстановить /home невозможно."
+        S_ERR_AUTH="Авторизация администратора не удалась или была отменена."
+        S_ERR_UNDERSTAND="Сначала установите флажок подтверждения, чтобы продолжить."
+        S_UNDERSTAND_RESTORE="Я понимаю, что системные файлы будут перезаписаны"
+        S_UNDERSTAND_DELETE="Я понимаю, что это действие нельзя отменить"
+        S_BTN_STOP="Стоп!gtk-stop:1"
+        S_OP_CANCELLED="Операция отменена."
+        S_DELETE_ERR="Не удалось полностью удалить кэш."
+        S_VERSIONING_LABEL="Версионирование"
+        S_STATUS_LABEL="Статус"
         ;;
 
     # ── ENGLISH (default) ────────────────────────────────────
@@ -793,7 +887,7 @@ load_strings() {
         S_RESTORE_INFO_DISTRO="Distro"
         S_RESTORE_INFO_KERNEL="Kernel"
         S_RESTORE_INFO_SIZE="Size"
-        S_RESTORE_CONFIRM="<span color='#c62828'>Confirm restore?</span>"
+        S_RESTORE_CONFIRM="<b>Confirm restore?</b>"
         S_RESTORE_LOG_TITLE="DistroClone — RESTORE"
         S_RESTORE_LOG_FROM="From cache"
         S_RESTORE_LOG_TO="To"
@@ -803,16 +897,16 @@ load_strings() {
         S_RESTORE_OK_TEXT="<big><b>✓ Restore completed!</b></big>"
         S_RESTORE_OK_DATE="System restored from backup dated"
         S_RESTORE_OK_PROTECTED="<b>Protected:</b> /home ✓   /root ✓   /boot/efi ✓"
-        S_RESTORE_OK_REBOOT="<span color='#c62828'><b>Please reboot the system.</b></span>"
+        S_RESTORE_OK_REBOOT="<b><b>Please reboot the system.</b></b>"
         S_RESTORE_ERR_TITLE="DistroClone — Restore Error"
         S_RESTORE_ERR_TEXT="<b>✗ Restore failed!</b>"
 
         S_CRON_DIALOG_TITLE="DistroClone — Schedule Backup"
         S_CRON_DIALOG_HEADER="<big><b>Schedule Automatic Backup</b></big>"
-        S_CRON_STATUS_ACTIVE="<span color='#2e7d32'>● Schedule active</span>"
-        S_CRON_STATUS_NONE="<span color='#c62828'>● No schedule active</span>"
+        S_CRON_STATUS_ACTIVE="● Schedule active"
+        S_CRON_STATUS_NONE="<b>● No schedule active</b>"
         S_CRON_STATUS_NOCRON="<small>No cronjob configured</small>"
-        S_CRON_HINT="<span color='#666666'><small>Backup will run automatically at scheduled times.\nRequires existing cache (run Full Backup first).</small></span>"
+        S_CRON_HINT="<small>Backup will run automatically at scheduled times.\nRequires existing cache (run Full Backup first).</small>"
         S_CRON_FIELD_FREQ="<b>Frequency</b>"
         S_CRON_FIELD_DAY="<b>Day of week</b> (if weekly)"
         S_CRON_FIELD_HOUR="<b>Execution hour</b> (0-23)"
@@ -836,14 +930,14 @@ load_strings() {
         S_DELETE_DATE="Date"
         S_DELETE_SIZE="Size"
         S_DELETE_PATH="Path"
-        S_DELETE_WARN="<span color='#c62828'>Irreversible.\nCronjob schedule will also be removed.</span>"
+        S_DELETE_WARN="<b>Irreversible.\nCronjob schedule will also be removed.</b>"
         S_DELETE_OK_TITLE="DistroClone — Cache Deleted"
         S_DELETE_OK_TEXT="✓ Cache deleted.\n✓ Cronjob removed."
 
         S_SUDO_NEEDED="Sudo permissions required"
         S_LOG_CHECK="Verify with"
         S_HOME_INCLUDE="Include /home in backup"
-        S_HOME_INCLUDE_WARN="<span color='#e65100'><small>⚠ Significantly increases size and time</small></span>"
+        S_HOME_INCLUDE_WARN="<small>⚠ Significantly increases size and time</small>"
         S_HOME_INCLUDED="● /home included in backup"
         S_HOME_EXCLUDED="● /home excluded (system only)"
         S_BACKUP_OPT_TITLE="Backup Options"
@@ -852,9 +946,9 @@ load_strings() {
         S_SETTINGS_TITLE="DistroClone — Settings"
         S_SETTINGS_HEADER="<big><b>Settings</b></big>"
         S_SETTINGS_CACHE_DIR="<b>Backup cache directory</b>"
-        S_SETTINGS_CACHE_HINT="<span color='#666666'><small>Default: /mnt — Can be an external disk, NFS, etc.\nSubfolder .rootfs_cache will be created</small></span>"
+        S_SETTINGS_CACHE_HINT="<small>Default: /mnt — Can be an external disk, NFS, etc.\nSubfolder .rootfs_cache will be created</small>"
         S_SETTINGS_SAVED="✓ Settings saved."
-        S_SETTINGS_WARN_DIR="<span color='#c62828'>Invalid or inaccessible directory.</span>"
+        S_SETTINGS_WARN_DIR="<b>Invalid or inaccessible directory.</b>"
         S_SETTINGS_MAX_SNAPS="<b>Max snapshots to keep</b> (0 = disabled):"
 
         S_BTRFS_AVAILABLE="● Versioning active (btrfs)"
@@ -871,337 +965,721 @@ load_strings() {
         S_SNAP_NO_SNAPS="No snapshots available."
         S_SNAP_ERR_TITLE="DistroClone — Snapshot Error"
         S_SNAP_ERR_TEXT="<b>✗ Snapshot operation failed!</b>"
+
+        # ── added in 1.4.0 ──
+        S_ERR_BUSY="Another backup or restore operation is already running."
+        S_ERR_NO_SPACE="Not enough free space for a full backup at the chosen location."
+        S_ERR_FS="The cache location uses a filesystem without Linux permissions (FAT, exFAT or NTFS). Choose another location."
+        S_ERR_CACHE_INCOMPLETE="The backup cache is missing, incomplete or from another distribution. Restore refused."
+        S_ERR_NO_HOME_BACKUP="This backup does not contain /home, so /home cannot be restored."
+        S_ERR_AUTH="Administrator authorization failed or was cancelled."
+        S_ERR_UNDERSTAND="Tick the confirmation box first to continue."
+        S_UNDERSTAND_RESTORE="I understand that system files will be overwritten"
+        S_UNDERSTAND_DELETE="I understand that this cannot be undone"
+        S_BTN_STOP="Stop!gtk-stop:1"
+        S_OP_CANCELLED="Operation cancelled."
+        S_DELETE_ERR="The cache could not be fully deleted."
+        S_VERSIONING_LABEL="Versioning"
+        S_STATUS_LABEL="Status"
         ;;
     esac
 }
 
-# Carica stringhe
+# Load strings
 load_strings
 
-# ── Mappa giorni della settimana → numero cron ───────────────
-# Dipende dalla lingua
-day_to_dow() {
-    local day="$1"
-    case "$LANG_CODE" in
-        it) case "$day" in
-                "Lunedì") echo 1 ;; "Martedì") echo 2 ;; "Mercoledì") echo 3 ;;
-                "Giovedì") echo 4 ;; "Venerdì") echo 5 ;; "Sabato") echo 6 ;;
-                "Domenica") echo 0 ;; *) echo 1 ;;
-            esac ;;
-        de) case "$day" in
-                "Montag") echo 1 ;; "Dienstag") echo 2 ;; "Mittwoch") echo 3 ;;
-                "Donnerstag") echo 4 ;; "Freitag") echo 5 ;; "Samstag") echo 6 ;;
-                "Sonntag") echo 0 ;; *) echo 1 ;;
-            esac ;;
-        fr) case "$day" in
-                "Lundi") echo 1 ;; "Mardi") echo 2 ;; "Mercredi") echo 3 ;;
-                "Jeudi") echo 4 ;; "Vendredi") echo 5 ;; "Samedi") echo 6 ;;
-                "Dimanche") echo 0 ;; *) echo 1 ;;
-            esac ;;
-        es) case "$day" in
-                "Lunes") echo 1 ;; "Martes") echo 2 ;; "Miércoles") echo 3 ;;
-                "Jueves") echo 4 ;; "Viernes") echo 5 ;; "Sábado") echo 6 ;;
-                "Domingo") echo 0 ;; *) echo 1 ;;
-            esac ;;
-        ru) case "$day" in
-                "Понедельник") echo 1 ;; "Вторник") echo 2 ;; "Среда") echo 3 ;;
-                "Четверг") echo 4 ;; "Пятница") echo 5 ;; "Суббота") echo 6 ;;
-                "Воскресенье") echo 0 ;; *) echo 1 ;;
-            esac ;;
-        *)  case "$day" in
-                "Monday") echo 1 ;; "Tuesday") echo 2 ;; "Wednesday") echo 3 ;;
-                "Thursday") echo 4 ;; "Friday") echo 5 ;; "Saturday") echo 6 ;;
-                "Sunday") echo 0 ;; *) echo 1 ;;
-            esac ;;
-    esac
+# ════════════════════════════════════════════════════════════
+#  PATHS, SETTINGS, SAFE FILE PARSING
+# ════════════════════════════════════════════════════════════
+CONF_DIR="/etc/distroclone-backup"
+CONF_FILE="$CONF_DIR/settings.conf"
+EXCLUDE_FILE="$CONF_DIR/exclude.list"
+LOG_FILE="/var/log/distroclone-backup.log"
+LOCK_FILE="/run/lock/distroclone-backup.lock"
+SNAPPER_CFG_NAME="distroclone-backup"
+CRON_PATTERN='distro[cC]lone-backup'
+
+CACHE_BASE_DIR="/mnt"
+MAX_SNAPSHOTS=3
+INCLUDE_HOME="FALSE"
+NOTIFY="TRUE"
+
+# Escape text before it goes into yad/Pango markup.
+esc() {
+    local s="$1"
+    s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
+    printf '%s' "$s"
 }
 
-# ── Mappa frequenza → espressione cron ───────────────────────
-freq_to_cron() {
-    local freq="$1" hour="$2" dow="$3"
-    if [ "$freq" = "$S_CRON_FREQ_DAILY" ];   then echo "0 $hour * * *"; fi
-    if [ "$freq" = "$S_CRON_FREQ_WEEKLY" ];  then echo "0 $hour * * $dow"; fi
-    if [ "$freq" = "$S_CRON_FREQ_MONTHLY" ]; then echo "0 $hour 1 * *"; fi
+# Drop control characters and keep short values from files on removable disks.
+clean_value() {
+    local v
+    v=$(printf '%s' "$1" | tr -d '\000-\037\177')
+    printf '%s' "${v:0:80}"
 }
 
-# ════════════════════════════════════════════════════════════
-#  MODALITÀ SILENZIOSA PER CRON
-# ════════════════════════════════════════════════════════════
-if [[ "$1" == "--incremental-silent" ]]; then
-    source /etc/os-release
-    DISTRO_ID="${ID}"
-    LOG_FILE="/var/log/distroclone-backup.log"
+# A directory chosen by the user: absolute, plain characters, no "..".
+valid_dir_path() {
+    local p="$1" re='^/[A-Za-z0-9._/ +@:,%=-]*$'
+    [[ "$p" =~ $re ]] || return 1
+    [ "$p" != "/" ] || return 1
+    [[ "/$p/" != *"/../"* ]] || return 1
+    return 0
+}
 
-    # Fix: legge settings.conf dell'utente che ha schedulato il cron
-    # Il cron gira come root; cerca il conf nell'home del primo utente reale
-    # (uid 1000-65533) che abbia un settings.conf di distroclone-backup
-    CRON_CONF=""
-    while IFS= read -r user_home; do
-        candidate="${user_home}/.config/distroclone-backup/settings.conf"
-        if [ -f "$candidate" ]; then
-            CRON_CONF="$candidate"
-            break
+# Settings files are data, never code: only known keys, validated values.
+parse_conf() {
+    local file="$1" line key value
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^([A-Z_]+)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+        # Files written by versions before 1.4 quote the value.
+        if [[ "$value" =~ ^\"(.*)\"$ ]]; then value="${BASH_REMATCH[1]}"; fi
+        case "$key" in
+            CACHE_BASE_DIR) if valid_dir_path "$value"; then CACHE_BASE_DIR="$value"; fi ;;
+            MAX_SNAPSHOTS)  if [[ "$value" =~ ^[0-9]{1,2}$ ]]; then MAX_SNAPSHOTS="$value"; fi ;;
+            INCLUDE_HOME)   if [ "$value" = TRUE ] || [ "$value" = FALSE ]; then INCLUDE_HOME="$value"; fi ;;
+            NOTIFY)         if [ "$value" = TRUE ] || [ "$value" = FALSE ]; then NOTIFY="$value"; fi ;;
+        esac
+    done < "$file"
+    return 0
+}
+
+write_conf() {
+    local tmp
+    install -d -m 755 "$CONF_DIR" || return 1
+    tmp=$(mktemp "$CONF_DIR/.settings.XXXXXX") || return 1
+    {
+        printf 'CACHE_BASE_DIR=%s\n' "$CACHE_BASE_DIR"
+        printf 'MAX_SNAPSHOTS=%s\n' "$MAX_SNAPSHOTS"
+        printf 'INCLUDE_HOME=%s\n' "$INCLUDE_HOME"
+        printf 'NOTIFY=%s\n' "$NOTIFY"
+    } > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$CONF_FILE"
+}
+
+# Carry the settings of earlier versions (kept in a user's home) over to the
+# root-owned file, validating every value.
+import_legacy_conf() {
+    local first_home="${1:-}" home
+    [ -f "$CONF_FILE" ] && return 0
+    while IFS= read -r home; do
+        [ -n "$home" ] || continue
+        if parse_conf "$home/.config/distroclone-backup/settings.conf"; then
+            write_conf
+            return 0
         fi
-    done < <(getent passwd | awk -F: '$3>=1000 && $3<65534 {print $6}')
+    done < <({ [ -n "$first_home" ] && echo "$first_home"; getent passwd | awk -F: '$3>=1000 && $3<65534 {print $6}'; })
+    return 0
+}
 
-    # Default; sovrascritti dal conf se trovato
-    CACHE_BASE_DIR="/mnt"
-    MAX_SNAPSHOTS=3
-    [ -n "$CRON_CONF" ] && source "$CRON_CONF"
+load_os_release() {
+    local ID="" PRETTY_NAME=""
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    DISTRO_ID="$ID"
+    DISTRO_PRETTY="$PRETTY_NAME"
+    [[ "$DISTRO_ID" =~ ^[a-z0-9._-]+$ ]] || DISTRO_ID="linux"
+}
 
-    # Fix: suffisso corretto _backup (non _live)
+set_paths() {
     CACHE_BASE="${CACHE_BASE_DIR}/${DISTRO_ID}_backup"
     ROOTFS_CACHE="${CACHE_BASE}/.rootfs_cache"
     CACHE_META="${CACHE_BASE}/.backup_meta"
     SNAPSHOTS_DIR="${CACHE_BASE}/.snapshots"
+}
 
-    _log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+reset_meta() {
+    META_DATE="—"; META_DISTRO="—"; META_SIZE="—"; META_KERNEL="—"; META_HOME="FALSE"
+}
 
-    _log "── Incremental backup (cron) ──"
-    [ -n "$CRON_CONF" ] && _log "   Config: $CRON_CONF  →  Cache: $ROOTFS_CACHE"
+# Metadata is read from the cache disk: parse it, never source it.
+read_meta() {
+    reset_meta
+    [ -f "$CACHE_META" ] && [ ! -L "$CACHE_META" ] || return 0
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^(META_[A-Z]+)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+        if [[ "$value" =~ ^\"(.*)\"$ ]]; then value="${BASH_REMATCH[1]}"; fi
+        value=$(clean_value "$value")
+        [ -n "$value" ] || continue
+        case "$key" in
+            META_DATE)   META_DATE="$value" ;;
+            META_DISTRO) META_DISTRO="$value" ;;
+            META_SIZE)   META_SIZE="$value" ;;
+            META_KERNEL) META_KERNEL="$value" ;;
+            META_HOME)   if [ "$value" = TRUE ]; then META_HOME="TRUE"; fi ;;
+        esac
+    done < "$CACHE_META"
+}
 
-    if [ ! -d "$ROOTFS_CACHE" ]; then
-        _log "ERROR: cache not found: $ROOTFS_CACHE"
-        exit 1
+write_meta() {
+    local include_home="${1:-FALSE}" tmp size
+    size=$(du -sh "$ROOTFS_CACHE" 2>/dev/null | cut -f1)
+    tmp=$(mktemp "$CACHE_BASE/.backup_meta.XXXXXX") || return 1
+    {
+        printf 'META_DATE=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf 'META_DISTRO=%s\n' "$(clean_value "$DISTRO_PRETTY")"
+        printf 'META_SIZE=%s\n' "$size"
+        printf 'META_KERNEL=%s\n' "$(uname -r)"
+        printf 'META_HOME=%s\n' "$include_home"
+    } > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$CACHE_META"
+}
+
+# Snapshot metadata of the raw btrfs mode (same rules as read_meta).
+read_snap_meta() {
+    SNAP_DATE="—"; SNAP_DISTRO="—"; SNAP_SIZE="—"
+    local file="$1" line key value
+    [ -f "$file" ] && [ ! -L "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^(SNAP_[A-Z]+)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+        if [[ "$value" =~ ^\"(.*)\"$ ]]; then value="${BASH_REMATCH[1]}"; fi
+        value=$(clean_value "$value")
+        [ -n "$value" ] || continue
+        case "$key" in
+            SNAP_DATE)   SNAP_DATE="$value" ;;
+            SNAP_DISTRO) SNAP_DISTRO="$value" ;;
+            SNAP_SIZE)   SNAP_SIZE="$value" ;;
+        esac
+    done < "$file"
+}
+
+# ── Logging ─────────────────────────────────────────────────
+init_log() {
+    if [ ! -e "$LOG_FILE" ]; then
+        install -m 640 -o root -g adm /dev/null "$LOG_FILE" 2>/dev/null \
+            || install -m 640 /dev/null "$LOG_FILE" 2>/dev/null || true
     fi
-
-    # Versioning pre-rsync se il filesystem lo supporta
-    _is_btrfs_cron()  { df --output=fstype "$CACHE_BASE_DIR" 2>/dev/null | grep -q "btrfs"; }
-    _has_snapper_cron() { command -v snapper >/dev/null 2>&1; }
-
-    _prune_snapshots_cron() {
-        [ "${MAX_SNAPSHOTS:-3}" -le 0 ] && return
-        local snaps
-        mapfile -t snaps < <(find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d 2>/dev/null | sort)
-        local count=${#snaps[@]}
-        if [ "$count" -gt "$MAX_SNAPSHOTS" ]; then
-            local to_delete=$(( count - MAX_SNAPSHOTS ))
-            for (( i=0; i<to_delete; i++ )); do
-                btrfs subvolume delete "${snaps[$i]}" >> "$LOG_FILE" 2>&1
-                rm -f "${snaps[$i]}.meta" 2>/dev/null
-                _log "   Pruned: $(basename "${snaps[$i]}")"
-            done
-        fi
-    }
-
-    if _is_btrfs_cron && _has_snapper_cron \
-       && snapper -c distroclone-backup get-config >/dev/null 2>&1; then
-        # v1.3: usa snapper se config dedicato disponibile
-        local _size_kb
-        _size_kb=$(du -sk "$ROOTFS_CACHE" 2>/dev/null | cut -f1)
-        _log "→ Creating snapper snapshot (cron incremental)"
-        if snapper -c distroclone-backup create \
-                --type single \
-                --description "distroclone-backup cron $(date '+%Y-%m-%d %H:%M')" \
-                --userdata "distro=${PRETTY_NAME},kernel=$(uname -r),size_kb=${_size_kb}" \
-                >> "$LOG_FILE" 2>&1; then
-            _log "✓ Snapper snapshot created"
-            snapper -c distroclone-backup cleanup number >> "$LOG_FILE" 2>&1 || true
-        else
-            _log "⚠ Snapper snapshot failed — continuing with rsync anyway"
-        fi
-    elif _is_btrfs_cron && btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
-        # Fallback v1.2.2: snapshot btrfs raw
-        local_snap="@$(date '+%Y-%m-%d_%H:%M')"
-        mkdir -p "$SNAPSHOTS_DIR"
-        _log "→ Creating snapshot: $local_snap"
-        if btrfs subvolume snapshot -r "$ROOTFS_CACHE" "$SNAPSHOTS_DIR/$local_snap" >> "$LOG_FILE" 2>&1; then
-            bash -c "cat > '$SNAPSHOTS_DIR/${local_snap}.meta'" <<EOF
-SNAP_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-SNAP_DISTRO="${PRETTY_NAME}"
-SNAP_KERNEL="$(uname -r)"
-SNAP_SIZE="$(du -sh "$SNAPSHOTS_DIR/$local_snap" 2>/dev/null | cut -f1)"
-EOF
-            _log "✓ Snapshot created: $local_snap"
-            _prune_snapshots_cron
-        else
-            _log "⚠ Snapshot failed — continuing with rsync anyway"
-        fi
-    fi
-
-    rsync -aAXH --numeric-ids --update --delete --one-file-system \
-      --exclude=/dev/* --exclude=/proc/* --exclude=/sys/* \
-      --exclude=/run/* --exclude=/tmp/* --exclude=/mnt/* \
-      --exclude=/media/* --exclude=/lost+found --exclude=/swapfile \
-      --exclude=/home/* --exclude=/root/* \
-      --exclude=/boot/efi/* --exclude=/boot/efi \
-      --exclude=/var/cache/apt/archives/* --exclude=/var/lib/apt/lists/* \
-      --exclude=/var/log/* --exclude=/var/tmp/* \
-      --exclude=/etc/NetworkManager/system-connections/* \
-      --exclude=/usr/share/distroclone-backup \
-      --exclude=/usr/bin/distroClone-backup \
-      --exclude=/snap --exclude=/snap/* --exclude=/var/snap \
-      --exclude=/var/lib/snapd \
-      --exclude=/.snapshots --exclude=/.snapshots/* \
-      --exclude=/var/lib/snapper \
-      --exclude=/home/*/.config/Claude \
-      --exclude=/home/*/.claude \
-      --exclude=/home/*/.claude.json \
-      --exclude=/home/*/.cache/claude-desktop-debian \
-      --exclude=/root/.config/Claude \
-      --exclude=/root/.claude \
-      --exclude=/root/.claude.json \
-      --exclude=/root/.cache/claude-desktop-debian \
-      / "$ROOTFS_CACHE" >> "$LOG_FILE" 2>&1
-
-    EXIT_CODE=$?
-    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 24 ]; then
-        bash -c "cat > '$CACHE_META'" <<EOF
-META_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-META_DISTRO="${PRETTY_NAME}"
-META_SIZE="$(du -sh "$ROOTFS_CACHE" 2>/dev/null | cut -f1)"
-META_KERNEL="$(uname -r)"
-EOF
-        _log "✓ Incremental backup completed  ($(du -sh "$ROOTFS_CACHE" 2>/dev/null | cut -f1))"
-        exit 0
-    else
-        _log "✗ rsync error (exit: $EXIT_CODE)"
-        exit 1
-    fi
-fi
-
-# ════════════════════════════════════════════════════════════
-#  MODALITÀ GRAFICA
-# ════════════════════════════════════════════════════════════
-
-REAL_USER="${USER:-$(whoami)}"
-if [ "$EUID" -eq 0 ]; then
-    REAL_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
-fi
-REAL_UID=$(id -u "$REAL_USER" 2>/dev/null)
-
-# ── Fix DISPLAY/XAUTHORITY per lancio da menu ────────────────
-if [ -z "$DISPLAY" ]; then
-    # Metodo 1: systemctl --user (funziona su GNOME, MATE, KDE, XFCE)
-    if command -v systemctl >/dev/null 2>&1 && [ -n "$REAL_UID" ]; then
-        eval "$(XDG_RUNTIME_DIR="/run/user/$REAL_UID" \
-            systemctl --user show-environment 2>/dev/null | \
-            grep -E '^(DISPLAY|XAUTHORITY)=' | sed 's/^/export /')"
-    fi
-    # Metodo 2: scansione /proc di tutti i processi dell'utente
-    if [ -z "$DISPLAY" ] && [ -n "$REAL_UID" ]; then
-        for envf in /proc/[0-9]*/environ; do
-            [ "$(stat -c %u "$envf" 2>/dev/null)" = "$REAL_UID" ] || continue
-            D=$(tr '\0' '\n' < "$envf" 2>/dev/null | grep '^DISPLAY=')
-            [ -n "$D" ] && export "$D" && break
-        done
-    fi
-    # Fallback
-    [ -z "$DISPLAY" ] && export DISPLAY=":0"
-fi
-
-if [ -z "$XAUTHORITY" ]; then
-    for _xa in \
-        "/run/user/${REAL_UID}/gdm/Xauthority" \
-        "/home/${REAL_USER}/.Xauthority" \
-        "/tmp/.Xauthority"; do
-        [ -f "$_xa" ] && export XAUTHORITY="$_xa" && break
-    done
-fi
-
-# ── Verifica sudoers installato ──────────────────────────────
-if [ ! -f "/etc/sudoers.d/distroclone-backup" ]; then
-    yad --error \
-        --title="DistroClone Backup" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        --text="<b>Configurazione sudo mancante.</b>\n\nRiinstalla il pacchetto:\n<tt>sudo apt install ./distroclone-backup_1.0_all.deb</tt>\n\nPoi verifica:\n<tt>sudo -l | grep NOPASSWD</tt>" \
-        --button="OK:0" --width=440 --height=200 --fixed --center 2>/dev/null
-    exit 1
-fi
-
-for cmd in yad rsync convert; do
-    command -v "$cmd" >/dev/null 2>&1 || sudo apt-get install -y "$cmd" -qq
-done
-
-source /etc/os-release
-DISTRO_ID="${ID}"
-DISTRO_PRETTY="${PRETTY_NAME}"
-
-# ── Configurazione utente ────────────────────────────────────
-CONF_DIR="${HOME}/.config/distroclone-backup"
-CONF_FILE="${CONF_DIR}/settings.conf"
-mkdir -p "$CONF_DIR" 2>/dev/null
-
-# Carica impostazioni salvate o usa default
-CACHE_BASE_DIR="/mnt"
-MAX_SNAPSHOTS=3
-[ -f "$CONF_FILE" ] && source "$CONF_FILE"
-
-CACHE_BASE="${CACHE_BASE_DIR}/${DISTRO_ID}_backup"
-ROOTFS_CACHE="${CACHE_BASE}/.rootfs_cache"
-CACHE_META="${CACHE_BASE}/.backup_meta"
-SNAPSHOTS_DIR="${CACHE_BASE}/.snapshots"
-LOG_FILE="/var/log/distroclone-backup.log"
-
-sudo touch "$LOG_FILE" 2>/dev/null
-sudo chmod 666 "$LOG_FILE" 2>/dev/null
-
-ICON_PKG="/usr/share/distroclone-backup/distroclone-bkp-logo.png"
-ICON_INSTALLED="/usr/share/icons/hicolor/128x128/apps/distroclone-backup.png"
-TEMP_LOGO="/tmp/distroclone-bkp-logo.png"
-
-if [ -f "$ICON_PKG" ]; then
-    # Priorità 1: logo personalizzato incluso nel pacchetto
-    cp "$ICON_PKG" "$TEMP_LOGO" 2>/dev/null || TEMP_LOGO="$ICON_PKG"
-elif [ -f "$ICON_INSTALLED" ]; then
-    # Priorità 2: icona hicolor installata
-    cp "$ICON_INSTALLED" "$TEMP_LOGO" 2>/dev/null || TEMP_LOGO="$ICON_INSTALLED"
-elif command -v convert >/dev/null 2>&1; then
-    # Priorità 3: generata al volo con convert (fallback)
-    convert -size 128x128 xc:transparent \
-        -fill '#1b5e20' -draw 'polygon 64,10 109,36 109,91 64,118 19,91 19,36' \
-        -fill 'none' -strokewidth 3 -stroke '#388e3c' \
-        -draw 'polygon 64,20 99,41 99,86 64,108 29,86 29,41' \
-        -fill '#4caf50' -draw 'polygon 64,35 85,46 85,81 64,93 43,81 43,46' \
-        -fill 'white' -font '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' \
-        -pointsize 28 -gravity center -annotate +0+0 'BKP' \
-        "$TEMP_LOGO" 2>/dev/null || TEMP_LOGO=""
-fi
-
-# ── Primo avvio: nessun conf e nessuna cache → chiedi directory ──
-if [ ! -f "$CONF_FILE" ] && [ ! -d "$ROOTFS_CACHE" ]; then
-    FIRST_DIR=$(yad --file-selection --directory \
-        --title="$S_SETTINGS_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        --filename="/mnt/" \
-        --text="$S_SETTINGS_HEADER\n\n$S_SETTINGS_CACHE_DIR\n\n$S_SETTINGS_CACHE_HINT" \
-        --button="$S_BTN_CANCEL:1" \
-        --button="$S_BTN_OK" \
-        --center 2>/dev/null)
-    if [ $? -eq 0 ] && [ -n "$FIRST_DIR" ] && [ -d "$FIRST_DIR" ]; then
-        CACHE_BASE_DIR="$FIRST_DIR"
-        echo "CACHE_BASE_DIR=\"$CACHE_BASE_DIR\"" > "$CONF_FILE"
-        CACHE_BASE="${CACHE_BASE_DIR}/${DISTRO_ID}_backup"
-        ROOTFS_CACHE="${CACHE_BASE}/.rootfs_cache"
-        CACHE_META="${CACHE_BASE}/.backup_meta"
-    fi
-fi
+    chmod 640 "$LOG_FILE" 2>/dev/null || true
+}
 
 LOG_PID=""
 
 log() {
-    local ts; ts="$(date '+%Y-%m-%d %H:%M:%S')"
-    echo "[$ts] $*" | tee -a "$LOG_FILE"
-    { echo "[$ts] $*" >&3; } 2>/dev/null || true
+    local line
+    line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || true
+    { printf '%s\n' "$line" >&3; } 2>/dev/null || true
+}
+
+# ── One operation at a time (cron and interface share the cache) ─
+acquire_lock() {
+    { exec 9>"$LOCK_FILE"; } 2>/dev/null || return 1
+    flock -n 9
+}
+release_lock() { { exec 9>&-; } 2>/dev/null || true; }
+
+# Keep only the shell-safe prefix of a name used in rsync patterns.
+rsync_escape() {
+    local s="$1" out="" c i
+    for ((i=0; i<${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            '['|']'|'\'|'*'|'?') out+="\\$c" ;;
+            *) out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# ── Cache location checks ───────────────────────────────────
+# FAT, exFAT, NTFS and FUSE disks drop Unix owners and modes: /etc/shadow and
+# SSH keys would become readable by everybody and rsync would fail on ACLs.
+cache_fs_ok() {
+    local t
+    t=$(findmnt -no FSTYPE -T "$CACHE_BASE_DIR" 2>/dev/null | head -n 1)
+    case "$t" in
+        vfat|msdos|exfat|ntfs|ntfs3|fuseblk|iso9660|udf) return 1 ;;
+    esac
+    return 0
+}
+
+# A first full backup needs room for the whole system (+5%).
+free_space_ok() {
+    local need avail
+    need=$(df --output=used -B1 / 2>/dev/null | tail -n 1 | tr -d ' ')
+    avail=$(df --output=avail -B1 "$CACHE_BASE_DIR" 2>/dev/null | tail -n 1 | tr -d ' ')
+    [[ "$need" =~ ^[0-9]+$ && "$avail" =~ ^[0-9]+$ ]] || return 0
+    [ "$avail" -ge $(( need + need / 20 )) ]
+}
+
+# A restore source must be a complete system of this distribution.
+verify_restore_source() {
+    local src="$1" id
+    [ -d "$src" ] && [ ! -L "$src" ] || return 1
+    [ -f "$src/etc/os-release" ] && [ -f "$src/etc/fstab" ] && [ -d "$src/usr/bin" ] || return 1
+    id=$(sed -n 's/^ID=//p' "$src/etc/os-release" | head -n 1 | tr -d "\"'")
+    [ "$id" = "$DISTRO_ID" ]
+}
+
+# Cache and snapshot paths that "Delete cache" may remove.
+safe_cache_target() {
+    local p="$1"
+    [ -n "$p" ] && [ ! -L "$p" ] || return 1
+    case "$p" in
+        "$CACHE_BASE_DIR/${DISTRO_ID}_backup/"*) ;;
+        *) return 1 ;;
+    esac
+    [[ "/$p/" != *"/../"* ]]
+}
+
+# ════════════════════════════════════════════════════════════
+#  BTRFS / SNAPPER VERSIONING
+# ════════════════════════════════════════════════════════════
+is_btrfs() {
+    [ "$(findmnt -no FSTYPE -T "$CACHE_BASE_DIR" 2>/dev/null | head -n 1)" = "btrfs" ]
+}
+
+has_snapper() { command -v snapper >/dev/null 2>&1; }
+
+# "snapper" | "btrfs" (raw snapshots) | "none"
+versioning_mode() {
+    if ! is_btrfs; then echo "none"; return; fi
+    if has_snapper; then echo "snapper"; return; fi
+    echo "btrfs"
+}
+
+init_btrfs_subvolume() {
+    if [ ! -d "$ROOTFS_CACHE" ]; then
+        install -d -m 700 "$CACHE_BASE"
+        btrfs subvolume create "$ROOTFS_CACHE" >/dev/null 2>&1
+        return 0
+    fi
+    if ! btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
+        log "$S_BTRFS_NOT_SUBVOL_WARN"
+        return 1
+    fi
+    return 0
+}
+
+create_snapshot() {
+    local snap_name size
+    snap_name="@$(date '+%Y-%m-%d_%H:%M')"
+    install -d -m 700 "$SNAPSHOTS_DIR"
+    log "$S_SNAP_CREATING $snap_name"
+    if btrfs subvolume snapshot -r "$ROOTFS_CACHE" "$SNAPSHOTS_DIR/$snap_name" >/dev/null 2>&1; then
+        size=$(du -sh "$SNAPSHOTS_DIR/$snap_name" 2>/dev/null | cut -f1)
+        {
+            printf 'SNAP_DATE=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+            printf 'SNAP_DISTRO=%s\n' "$(clean_value "$DISTRO_PRETTY")"
+            printf 'SNAP_KERNEL=%s\n' "$(uname -r)"
+            printf 'SNAP_SIZE=%s\n' "$size"
+        } > "$SNAPSHOTS_DIR/${snap_name}.meta"
+        log "$S_SNAP_CREATED $SNAPSHOTS_DIR/$snap_name"
+        return 0
+    fi
+    log "$S_SNAP_ERR_TEXT"
+    return 1
+}
+
+list_snapshots() {
+    [ -d "$SNAPSHOTS_DIR" ] || return 0
+    find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d | sort
+}
+
+prune_snapshots() {
+    [ "${MAX_SNAPSHOTS:-3}" -le 0 ] && return 0
+    local snaps count i to_delete
+    mapfile -t snaps < <(list_snapshots)
+    count=${#snaps[@]}
+    if [ "$count" -gt "$MAX_SNAPSHOTS" ]; then
+        log "$S_SNAP_PRUNING"
+        to_delete=$(( count - MAX_SNAPSHOTS ))
+        for (( i=0; i<to_delete; i++ )); do
+            btrfs subvolume delete "${snaps[$i]}" >/dev/null 2>&1
+            rm -f -- "${snaps[$i]}.meta" 2>/dev/null
+            log "  Removed: $(basename "${snaps[$i]}")"
+        done
+    fi
+}
+
+init_snapper_config() {
+    init_btrfs_subvolume || return 1
+    if ! snapper -c "$SNAPPER_CFG_NAME" get-config >/dev/null 2>&1; then
+        snapper -c "$SNAPPER_CFG_NAME" create-config "$ROOTFS_CACHE" >/dev/null 2>&1 || return 1
+        snapper -c "$SNAPPER_CFG_NAME" set-config TIMELINE_CREATE=no >/dev/null 2>&1 || true
+        snapper -c "$SNAPPER_CFG_NAME" set-config NUMBER_CLEANUP=yes >/dev/null 2>&1 || true
+    fi
+    local lim="${MAX_SNAPSHOTS:-3}"
+    [ "$lim" -le 0 ] && lim=999
+    snapper -c "$SNAPPER_CFG_NAME" set-config NUMBER_LIMIT="$lim" >/dev/null 2>&1 || true
+    snapper -c "$SNAPPER_CFG_NAME" set-config NUMBER_LIMIT_IMPORTANT="$lim" >/dev/null 2>&1 || true
+    return 0
+}
+
+create_snapper_snapshot() {
+    local size_kb distro desc
+    size_kb=$(du -sk "$ROOTFS_CACHE" 2>/dev/null | cut -f1)
+    distro="${DISTRO_PRETTY//,/ }"
+    distro="${distro//=/ }"
+    desc="distroclone-backup $(date '+%Y-%m-%d %H:%M:%S')"
+    log "$S_SNAP_CREATING"
+    if snapper -c "$SNAPPER_CFG_NAME" create --type single --description "$desc" \
+            --userdata "distro=${distro},kernel=$(uname -r),size_kb=${size_kb}" >/dev/null 2>&1; then
+        log "$S_SNAP_CREATED $desc"
+        return 0
+    fi
+    log "$S_SNAP_ERR_TEXT"
+    return 1
+}
+
+# Machine-readable snapper table: "col1;col2;..." without header.
+snapper_csv() {
+    local out
+    out=$(snapper -c "$SNAPPER_CFG_NAME" --csvout --separator ';' list --type single --columns "$1" 2>/dev/null) \
+        || out=$(snapper -c "$SNAPPER_CFG_NAME" --machine-readable csv --separator ';' list --type single --columns "$1" 2>/dev/null) \
+        || return 1
+    printf '%s\n' "$out" | tail -n +2
+}
+
+# "N|PATH" lines, oldest first.
+list_snapper_snapshots() {
+    local n p
+    snapper_csv number | awk -F';' '$1 ~ /^[0-9]+$/ && $1 > 0 {print $1}' | sort -n \
+        | while read -r n; do
+            p="$ROOTFS_CACHE/.snapshots/$n/snapshot"
+            [ -d "$p" ] && echo "$n|$p"
+        done
+}
+
+# One field of a "k=v,k=v" userdata string.
+ud_get() {
+    local ud="$1" key="$2" kv
+    local IFS=','
+    for kv in $ud; do
+        if [ "${kv%%=*}" = "$key" ]; then printf '%s' "${kv#*=}"; return 0; fi
+    done
+    return 0
+}
+
+prune_snapper_snapshots() {
+    log "$S_SNAP_PRUNING"
+    snapper -c "$SNAPPER_CFG_NAME" cleanup number >/dev/null 2>&1 || true
+}
+
+unified_list_snapshots() {
+    local mode p
+    mode=$(versioning_mode)
+    case "$mode" in
+        snapper) list_snapper_snapshots ;;
+        btrfs)
+            while IFS= read -r p; do
+                [ -n "$p" ] && echo "$(basename "$p")|$p"
+            done < <(list_snapshots)
+            ;;
+    esac
+}
+
+# ════════════════════════════════════════════════════════════
+#  RSYNC EXCLUDES — shared by backup and restore
+# ════════════════════════════════════════════════════════════
+# Both directions must skip the same paths: restore runs with --delete.
+build_common_excludes() {
+    EXCL=(
+        '--exclude=/dev/*' '--exclude=/proc/*' '--exclude=/sys/*'
+        '--exclude=/run/*' '--exclude=/tmp/*' '--exclude=/mnt/*'
+        '--exclude=/media/*' '--exclude=/lost+found' '--exclude=/swapfile'
+        '--exclude=/boot/efi' '--exclude=/boot/efi/*'
+        '--exclude=/var/cache/apt/archives/*' '--exclude=/var/lib/apt/lists/*'
+        '--exclude=/var/log/*' '--exclude=/var/tmp/*'
+        '--exclude=/etc/NetworkManager/system-connections/*'
+        '--exclude=/etc/distroclone-backup'
+        '--exclude=/usr/share/distroclone-backup'
+        '--exclude=/usr/bin/distroClone-backup'
+        '--exclude=/snap' '--exclude=/snap/*' '--exclude=/var/snap'
+        '--exclude=/var/lib/snapd'
+        # btrfs nested subvolumes (system snapshots, snapper cache).
+        '--exclude=/.snapshots' '--exclude=/.snapshots/*'
+        '--exclude=/var/lib/snapper'
+        "--exclude=$(rsync_escape "$CACHE_BASE")"
+    )
+    # Site-specific patterns: /etc/distroclone-backup/exclude.list (one per line).
+    if [ -f "$EXCLUDE_FILE" ] && [ ! -L "$EXCLUDE_FILE" ]; then
+        local line
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" =~ ^/[^[:cntrl:]]*$ ]] && EXCL+=("--exclude=$line")
+        done < "$EXCLUDE_FILE"
+    fi
+}
+
+build_backup_excludes() {
+    build_common_excludes
+    if [ "$1" != "TRUE" ]; then
+        EXCL+=('--exclude=/home/*' '--exclude=/root/*')
+    fi
+}
+
+# Restore: never enter another filesystem mounted on the live system
+# (a separate /boot, /data, /srv…): its files are absent from the cache and
+# --delete would wipe them.
+build_restore_excludes() {
+    build_common_excludes
+    if [ "$1" != "TRUE" ]; then
+        EXCL+=('--exclude=/home' '--exclude=/home/*' '--exclude=/root' '--exclude=/root/*')
+    fi
+    local t
+    while IFS= read -r t; do
+        [ -n "$t" ] && [ "$t" != "/" ] || continue
+        EXCL+=("--exclude=$(rsync_escape "$t")")
+    done < <(findmnt -lno TARGET 2>/dev/null)
+}
+
+# Run rsync, feeding its progress into the log; closing the log window
+# (the Stop button) terminates the transfer. Result in RSYNC_RC.
+RSYNC_RC=0
+RSYNC_CANCELLED=0
+rsync_run() {
+    local fifo reader rsync_pid
+    RSYNC_CANCELLED=0
+    fifo=$(mktemp -u /run/distroclone-backup-fifo.XXXXXXXX)
+    mkfifo -m 600 "$fifo" || { RSYNC_RC=1; return; }
+    rsync "$@" >"$fifo" 2>&1 &
+    rsync_pid=$!
+    (
+        tr '\r' '\n' <"$fifo" | while IFS= read -r line; do
+            [ -n "$line" ] && log "$line"
+        done
+    ) &
+    reader=$!
+    while kill -0 "$rsync_pid" 2>/dev/null; do
+        if [ -n "$LOG_PID" ] && ! kill -0 "$LOG_PID" 2>/dev/null; then
+            kill -TERM "$rsync_pid" 2>/dev/null
+            RSYNC_CANCELLED=1
+            break
+        fi
+        sleep 0.5
+    done
+    wait "$rsync_pid"; RSYNC_RC=$?
+    wait "$reader" 2>/dev/null
+    rm -f -- "$fifo"
+}
+
+rsync_ok() { [ "$RSYNC_RC" -eq 0 ] || [ "$RSYNC_RC" -eq 24 ]; }
+
+# ════════════════════════════════════════════════════════════
+#  BACKUP / RESTORE ENGINE (shared by the interface and cron)
+# ════════════════════════════════════════════════════════════
+# $1 = full|incremental   $2 = TRUE|FALSE include /home and /root
+# Returns 0 on success; BACKUP_ERR holds the S_ERR_* message otherwise.
+BACKUP_ERR=""
+backup_core() {
+    local mode="$1" inc_home="$2" mode_v progress=()
+    BACKUP_ERR=""
+    if ! valid_dir_path "$CACHE_BASE_DIR" || [ ! -d "$CACHE_BASE_DIR" ]; then
+        BACKUP_ERR="$S_SETTINGS_WARN_DIR"; return 1
+    fi
+    if ! cache_fs_ok; then BACKUP_ERR="$S_ERR_FS"; return 1; fi
+    if [ ! -f "$CACHE_META" ] && ! free_space_ok; then BACKUP_ERR="$S_ERR_NO_SPACE"; return 1; fi
+    [ -n "$LOG_PID" ] && progress=(--info=progress2)
+
+    mode_v=$(versioning_mode)
+    log "Versioning mode: $mode_v"
+    case "$mode_v" in
+        snapper)
+            if init_snapper_config && [ -f "$CACHE_META" ]; then
+                create_snapper_snapshot
+            fi
+            ;;
+        btrfs)
+            if init_btrfs_subvolume && [ -f "$CACHE_META" ]; then
+                create_snapshot
+            fi
+            ;;
+        *)
+            install -d -m 700 "$CACHE_BASE"
+            install -d -m 755 "$ROOTFS_CACHE"
+            ;;
+    esac
+    [ -d "$ROOTFS_CACHE" ] || install -d -m 755 "$ROOTFS_CACHE"
+    chmod 700 "$CACHE_BASE" 2>/dev/null || true
+
+    build_backup_excludes "$inc_home"
+    local opts=(-aAXH --numeric-ids --one-file-system --delete)
+    if [ "$mode" = "incremental" ]; then
+        opts+=(--update)
+        log "$S_BACKUP_MODE_INC"
+    else
+        log "$S_BACKUP_MODE_FULL"
+    fi
+    log "$S_BACKUP_RSYNC_START"
+    rsync_run "${opts[@]}" "${EXCL[@]}" "${progress[@]}" / "$ROOTFS_CACHE"
+
+    if [ "$RSYNC_CANCELLED" -eq 1 ]; then BACKUP_ERR="$S_OP_CANCELLED"; return 1; fi
+    if rsync_ok; then
+        write_meta "$inc_home"
+        # Rotate only after a successful copy, so failed runs never push good
+        # snapshots out of the retention window.
+        case "$mode_v" in
+            snapper) prune_snapper_snapshots ;;
+            btrfs)   prune_snapshots ;;
+        esac
+        return 0
+    fi
+    BACKUP_ERR="rsync exit code: $RSYNC_RC"
+    return 1
+}
+
+# $1 = source tree   $2 = TRUE|FALSE restore /home and /root
+# Refreshes the boot files afterwards: the restored system may carry other
+# kernels or modules than the ones the bootloader knows.
+restore_core() {
+    local src="$1" restore_home="$2" progress=()
+    [ -n "$LOG_PID" ] && progress=(--info=progress2)
+    build_restore_excludes "$restore_home"
+    rsync_run -aAXH --numeric-ids --delete --delete-after "${EXCL[@]}" "${progress[@]}" "$src/" /
+    if [ "$RSYNC_CANCELLED" -eq 1 ]; then BACKUP_ERR="$S_OP_CANCELLED"; return 1; fi
+    if rsync_ok; then
+        if command -v update-initramfs >/dev/null 2>&1; then
+            log "→ update-initramfs -u -k all"
+            update-initramfs -u -k all >> "$LOG_FILE" 2>&1 || log "⚠ update-initramfs failed"
+        fi
+        if command -v update-grub >/dev/null 2>&1; then
+            log "→ update-grub"
+            update-grub >> "$LOG_FILE" 2>&1 || log "⚠ update-grub failed"
+        fi
+        return 0
+    fi
+    BACKUP_ERR="rsync exit code: $RSYNC_RC"
+    return 1
+}
+
+# ── Schedule helpers ─────────────────────────────────────────
+cron_current() { crontab -l 2>/dev/null | grep -E "$CRON_PATTERN" || true; }
+cron_remove() { crontab -l 2>/dev/null | grep -vE "$CRON_PATTERN" | crontab - 2>/dev/null || true; }
+
+# Position of the chosen day in the (translated) list: Monday=1 … Sunday=0.
+day_to_dow() {
+    local chosen="$1" days d i=0
+    IFS='!' read -ra days <<< "$S_CRON_DAYS"
+    for d in "${days[@]}"; do
+        i=$((i + 1))
+        if [ "$d" = "$chosen" ]; then echo $(( i % 7 )); return; fi
+    done
+    echo 1
+}
+
+freq_to_cron() {
+    local freq="$1" hour="$2" dow="$3"
+    [ "$freq" = "$S_CRON_FREQ_DAILY" ]   && echo "0 $hour * * *"
+    [ "$freq" = "$S_CRON_FREQ_WEEKLY" ]  && echo "0 $hour * * $dow"
+    [ "$freq" = "$S_CRON_FREQ_MONTHLY" ] && echo "0 $hour 1 * *"
+    return 0
+}
+
+# The cron job runs as root without a session: tell the logged-in users.
+notify_users() {
+    command -v notify-send >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1 || return 0
+    local d uid user
+    for d in /run/user/*; do
+        uid="${d##*/}"
+        [[ "$uid" =~ ^[0-9]+$ ]] && [ "$uid" -ge 1000 ] && [ -S "$d/bus" ] || continue
+        user=$(getent passwd "$uid" | cut -d: -f1)
+        [ -n "$user" ] || continue
+        runuser -u "$user" -- env "DBUS_SESSION_BUS_ADDRESS=unix:path=$d/bus" \
+            notify-send 'DistroClone Backup' "$S_CRON_NOTIFY_MSG" --icon=distroclone-backup \
+            >/dev/null 2>&1 || true
+    done
+}
+
+# ════════════════════════════════════════════════════════════
+#  CRON MODE
+# ════════════════════════════════════════════════════════════
+cron_main() {
+    load_os_release
+    parse_conf "$CONF_FILE"
+    set_paths
+    init_log
+    log "── Incremental backup (cron) ──"
+    log "   Cache: $ROOTFS_CACHE"
+
+    if ! acquire_lock; then
+        log "Another backup operation is running: skipped"
+        return 0
+    fi
+    if [ ! -d "$ROOTFS_CACHE" ] || [ ! -f "$CACHE_META" ]; then
+        log "ERROR: no complete cache found: $ROOTFS_CACHE (run a Full Backup first)"
+        release_lock
+        return 1
+    fi
+    if backup_core incremental "$INCLUDE_HOME"; then
+        log "✓ Incremental backup completed  ($(du -sh "$ROOTFS_CACHE" 2>/dev/null | cut -f1))"
+        release_lock
+        [ "$NOTIFY" = "TRUE" ] && notify_users
+        return 0
+    fi
+    log "✗ Backup error: $BACKUP_ERR"
+    release_lock
+    return 1
+}
+
+# ════════════════════════════════════════════════════════════
+#  GRAPHICAL INTERFACE (runs as root, started through pkexec)
+# ════════════════════════════════════════════════════════════
+LOGO=""
+
+# Give each button of a dialog its own Alt+key (first free letter).
+MNB=()
+mn_set() {
+    MNB=()
+    local used="" spec text rest i ch low out
+    for spec in "$@"; do
+        if [[ "$spec" == *'!'* ]]; then
+            text="${spec%%!*}"; rest="!${spec#*!}"
+        elif [[ "$spec" == *:* ]]; then
+            text="${spec%:*}"; rest=":${spec##*:}"
+        else
+            text="$spec"; rest=""
+        fi
+        out="$text"
+        for ((i=0; i<${#text}; i++)); do
+            ch="${text:i:1}"
+            [[ "$ch" =~ [[:alnum:]] ]] || continue
+            low="${ch,,}"
+            [[ "$used" == *"$low"* ]] && continue
+            used+="$low"
+            out="${text:0:i}_${text:i}"
+            break
+        done
+        MNB+=("$out$rest")
+    done
+}
+
+error_dialog() {
+    mn_set "$S_BTN_OK"
+    yad --error --title="$S_APP_TITLE_WIN" ${LOGO:+--window-icon="$LOGO"} \
+        --text="$(esc "$1")" --button="${MNB[0]}" --width=440 --center 2>/dev/null
+}
+
+# Last log lines, escaped for markup, shown when an operation fails.
+error_tail() {
+    local t
+    t=$(tail -n 8 "$LOG_FILE" 2>/dev/null | cut -c1-160)
+    esc "$t"
 }
 
 open_log_window() {
+    mn_set "$S_BTN_STOP"
     exec 3> >(yad --text-info \
         --title="$S_BACKUP_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
+        ${LOGO:+--image="$LOGO"} \
         --image-on-top \
-        --back="#1a2e1a" --fore="#4caf50" \
         --fontname="Monospace 10" \
         --width=560 --height=400 \
         --tail --no-edit \
-        --button="$S_BTN_CLOSE" \
+        --button="${MNB[0]}" \
         --center 2>/dev/null)
     LOG_PID=$!
 }
 
 close_log_window() {
-    exec 3>&- 2>/dev/null || true
+    { exec 3>&-; } 2>/dev/null || true
     if [ -n "$LOG_PID" ] && kill -0 "$LOG_PID" 2>/dev/null; then
         sleep 2; kill "$LOG_PID" 2>/dev/null
         wait "$LOG_PID" 2>/dev/null || true
@@ -1209,266 +1687,38 @@ close_log_window() {
     LOG_PID=""
 }
 
-read_meta() {
-    if [ -f "$CACHE_META" ]; then
-        source "$CACHE_META"
-    else
-        META_DATE="—"; META_DISTRO="—"; META_SIZE="—"; META_KERNEL="—"
-    fi
-}
-
-write_meta() {
-    sudo bash -c "cat > '$CACHE_META'" <<EOF
-META_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-META_DISTRO="$DISTRO_PRETTY"
-META_SIZE="$(sudo du -sh "$ROOTFS_CACHE" 2>/dev/null | cut -f1)"
-META_KERNEL="$(uname -r)"
-EOF
-}
-
-############################################################
-# BTRFS VERSIONING (raw btrfs + snapper integration v1.3+)
-############################################################
-
-# Nome del config snapper dedicato alla cache di backup.
-SNAPPER_CFG_NAME="distroclone-backup"
-
-# Verifica se la destinazione è su filesystem btrfs
-is_btrfs() {
-    df --output=fstype "$CACHE_BASE_DIR" 2>/dev/null | grep -q "btrfs"
-}
-
-# Verifica se snapper è installato
-has_snapper() { command -v snapper >/dev/null 2>&1; }
-
-# Determina il modello di versioning attivo per la cache corrente.
-#   "snapper" → cache btrfs + snapper installato (v1.3+)
-#   "btrfs"   → cache btrfs senza snapper (fallback v1.2.2)
-#   "none"    → cache su fs non btrfs (ext4/xfs/…): nessun versioning
-versioning_mode() {
-    if ! is_btrfs; then echo "none"; return; fi
-    if has_snapper; then echo "snapper"; return; fi
-    echo "btrfs"
-}
-
-# Inizializza .rootfs_cache come subvolume btrfs (solo se non esiste ancora)
-init_btrfs_subvolume() {
-    if [ ! -d "$ROOTFS_CACHE" ]; then
-        sudo mkdir -p "$CACHE_BASE"
-        sudo btrfs subvolume create "$ROOTFS_CACHE" 2>/dev/null
-        return 0
-    fi
-    if ! sudo btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
-        log "$S_BTRFS_NOT_SUBVOL_WARN"
-        return 1
-    fi
-    return 0
-}
-
-# Crea uno snapshot read-only della cache corrente
-create_snapshot() {
-    local snap_name="@$(date '+%Y-%m-%d_%H:%M')"
-    sudo mkdir -p "$SNAPSHOTS_DIR"
-    log "$S_SNAP_CREATING $snap_name"
-    if sudo btrfs subvolume snapshot -r "$ROOTFS_CACHE" "$SNAPSHOTS_DIR/$snap_name" 2>/dev/null; then
-        sudo bash -c "cat > '$SNAPSHOTS_DIR/${snap_name}.meta'" <<EOF
-SNAP_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-SNAP_DISTRO="$DISTRO_PRETTY"
-SNAP_KERNEL="$(uname -r)"
-SNAP_SIZE="$(sudo du -sh "$SNAPSHOTS_DIR/$snap_name" 2>/dev/null | cut -f1)"
-EOF
-        log "$S_SNAP_CREATED $SNAPSHOTS_DIR/$snap_name"
-        return 0
-    else
-        log "$S_SNAP_ERR_TEXT"
-        return 1
-    fi
-}
-
-# Elenca snapshot disponibili (dal più vecchio al più recente)
-list_snapshots() {
-    [ -d "$SNAPSHOTS_DIR" ] || return
-    find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d | sort
-}
-
-# Elimina gli snapshot in eccesso oltre MAX_SNAPSHOTS
-prune_snapshots() {
-    [ "${MAX_SNAPSHOTS:-3}" -le 0 ] && return
-    local snaps
-    mapfile -t snaps < <(list_snapshots)
-    local count=${#snaps[@]}
-    if [ "$count" -gt "$MAX_SNAPSHOTS" ]; then
-        log "$S_SNAP_PRUNING"
-        local to_delete=$(( count - MAX_SNAPSHOTS ))
-        for (( i=0; i<to_delete; i++ )); do
-            sudo btrfs subvolume delete "${snaps[$i]}" 2>/dev/null
-            sudo rm -f "${snaps[$i]}.meta" 2>/dev/null
-            log "  Removed: $(basename "${snaps[$i]}")"
-        done
-    fi
-}
-
-############################################################
-# SNAPPER-BACKED VERSIONING (v1.3+)
-# Quando snapper è disponibile, la cache è gestita come un
-# subvolume con un config snapper dedicato. Gli snapshot
-# vivono in $ROOTFS_CACHE/.snapshots/N/snapshot (RO).
-############################################################
-
-# Crea (se mancante) il config snapper per la cache e allinea
-# NUMBER_LIMIT alle preferenze utente (MAX_SNAPSHOTS).
-init_snapper_config() {
-    init_btrfs_subvolume || return 1
-    if ! sudo snapper -c "$SNAPPER_CFG_NAME" get-config >/dev/null 2>&1; then
-        sudo snapper -c "$SNAPPER_CFG_NAME" create-config "$ROOTFS_CACHE" 2>/dev/null || return 1
-        sudo snapper -c "$SNAPPER_CFG_NAME" set-config TIMELINE_CREATE=no            >/dev/null 2>&1 || true
-        sudo snapper -c "$SNAPPER_CFG_NAME" set-config NUMBER_CLEANUP=yes             >/dev/null 2>&1 || true
-    fi
-    local lim="${MAX_SNAPSHOTS:-3}"
-    [ "$lim" -le 0 ] && lim=999
-    sudo snapper -c "$SNAPPER_CFG_NAME" set-config NUMBER_LIMIT="$lim"             >/dev/null 2>&1 || true
-    sudo snapper -c "$SNAPPER_CFG_NAME" set-config NUMBER_LIMIT_IMPORTANT="$lim"  >/dev/null 2>&1 || true
-    return 0
-}
-
-# Crea uno snapshot snapper della cache attuale.
-# Userdata contiene metadati riusati al restore.
-create_snapper_snapshot() {
-    local size_kb
-    size_kb=$(sudo du -sk "$ROOTFS_CACHE" 2>/dev/null | cut -f1)
-    local desc
-    desc="distroclone-backup $(date '+%Y-%m-%d %H:%M:%S')"
-    log "$S_SNAP_CREATING"
-    if sudo snapper -c "$SNAPPER_CFG_NAME" create \
-            --type single \
-            --description "$desc" \
-            --userdata "distro=${DISTRO_PRETTY},kernel=$(uname -r),size_kb=${size_kb}" \
-            >/dev/null 2>&1; then
-        log "$S_SNAP_CREATED $desc"
-        return 0
-    else
-        log "$S_SNAP_ERR_TEXT"
-        return 1
-    fi
-}
-
-# Elenca snapshot snapper come "NUMERO|PATH" (oldest → newest).
-list_snapper_snapshots() {
-    sudo snapper -c "$SNAPPER_CFG_NAME" list --type single --columns number 2>/dev/null \
-        | awk 'NR>2 && $1 ~ /^[0-9]+$/ {print $1}' \
-        | sort -n \
-        | while read -r n; do
-            [ "$n" -eq 0 ] && continue
-            local p="$ROOTFS_CACHE/.snapshots/$n/snapshot"
-            [ -d "$p" ] && echo "$n|$p"
-          done
-}
-
-# Estrai un campo userdata per uno snapshot snapper specifico.
-#   $1 = numero snapshot, $2 = chiave (es. distro, kernel, size_kb)
-snapper_userdata_get() {
-    local num="$1" key="$2"
-    sudo snapper -c "$SNAPPER_CFG_NAME" list --type single --columns number,userdata 2>/dev/null \
-        | awk -v n="$num" -v k="$key" '
-            NR>2 && $1==n {
-                # join the rest of fields as userdata string
-                ud=$2; for (i=3;i<=NF;i++) ud=ud" "$i
-                # parse comma-separated key=value pairs
-                nKV=split(ud, kvs, ",")
-                for (i=1;i<=nKV;i++) {
-                    split(kvs[i], kv, "=")
-                    gsub(/^[ \t]+|[ \t]+$/, "", kv[1])
-                    if (kv[1]==k) { print kv[2]; exit }
-                }
-            }'
-}
-
-# Pruning gestito da snapper (NUMBER_LIMIT è già impostato in init).
-prune_snapper_snapshots() {
-    log "$S_SNAP_PRUNING"
-    sudo snapper -c "$SNAPPER_CFG_NAME" cleanup number >/dev/null 2>&1 || true
-}
-
-# Lista unificata: ritorna "LABEL|PATH" per UI restore.
-# - mode=snapper → "N|PATH"
-# - mode=btrfs   → "@TIMESTAMP|PATH"
-unified_list_snapshots() {
-    local mode
-    mode=$(versioning_mode)
-    case "$mode" in
-        snapper)
-            list_snapper_snapshots
-            ;;
-        btrfs)
-            local p
-            for p in $(list_snapshots); do
-                echo "$(basename "$p")|$p"
-            done
-            ;;
-    esac
-}
-
-############################################################
-# RSYNC EXCLUDES — condivise tra backup e restore
-############################################################
-# Mantenere simmetriche è critico: dal v1.2.2 il restore usa --delete,
-# quindi ogni path escluso solo da un lato verrebbe cancellato sull'altro.
-build_common_excludes() {
-    COMMON_EXCL=(
-        --exclude=/dev/* --exclude=/proc/* --exclude=/sys/*
-        --exclude=/run/* --exclude=/tmp/* --exclude=/mnt/*
-        --exclude=/media/* --exclude=/lost+found --exclude=/swapfile
-        --exclude=/boot/efi --exclude=/boot/efi/*
-        --exclude=/var/cache/apt/archives/* --exclude=/var/lib/apt/lists/*
-        --exclude=/var/log/* --exclude=/var/tmp/*
-        --exclude=/etc/NetworkManager/system-connections/*
-        --exclude=/usr/share/distroclone-backup
-        --exclude=/usr/bin/distroClone-backup
-        --exclude=/snap --exclude=/snap/* --exclude=/var/snap
-        --exclude=/var/lib/snapd
-        # btrfs nested subvols (rootfs snapshots di syslinuxos-snapshots
-        # e snapper-cache della cache backup). Difensivo: --one-file-system
-        # già evita di attraversarli, ma --delete sul target potrebbe
-        # rimuoverli senza questo escludi.
-        --exclude=/.snapshots --exclude=/.snapshots/*
-        --exclude=/var/lib/snapper
-        --exclude=/home/*/.config/Claude
-        --exclude=/home/*/.claude
-        --exclude=/home/*/.claude.json
-        --exclude=/home/*/.cache/claude-desktop-debian
-        --exclude=/root/.config/Claude
-        --exclude=/root/.claude
-        --exclude=/root/.claude.json
-        --exclude=/root/.cache/claude-desktop-debian
-    )
+cleanup_gui() {
+    trap - EXIT INT TERM
+    [ -n "$LOG_PID" ] && kill "$LOG_PID" 2>/dev/null
+    release_lock
+    exit "${1:-0}"
 }
 
 ############################################################
 # BACKUP
 ############################################################
 do_backup() {
-    local MODE="$1"
+    local MODE="$1" OPT_RESULT SEL
 
-    # ── Dialog opzioni backup ────────────────────────────────
-    local OPT_RESULT
+    mn_set "$S_BTN_CANCEL" "$S_BTN_BACKUP_START"
     OPT_RESULT=$(yad --form \
         --title="$S_APP_TITLE_WIN" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
+        ${LOGO:+--image="$LOGO"} \
         --image-on-top \
         --width=480 --height=240 \
         --text="<big><b>$S_BACKUP_OPT_TITLE ($MODE)</b></big>\n\n$S_HOME_INCLUDE_WARN\n" \
         --separator="|" \
-        --field="$S_HOME_INCLUDE:":CHK "FALSE" \
-        --button="$S_BTN_CANCEL" \
-        --button="$S_BTN_BACKUP_START:0" \
+        --field="$S_HOME_INCLUDE:":CHK "$INCLUDE_HOME" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
         --buttons-layout=spread \
         --center 2>/dev/null)
-
     [ $? -ne 0 ] && return
+    SEL=$(cut -d'|' -f1 <<< "$OPT_RESULT")
+    [ "$SEL" = "TRUE" ] || SEL="FALSE"
 
-    local INCLUDE_HOME
-    INCLUDE_HOME=$(echo "$OPT_RESULT" | cut -d'|' -f1)
+    if ! acquire_lock; then error_dialog "$S_ERR_BUSY"; return; fi
 
     open_log_window
     log "══════════════════════════════════════════"
@@ -1477,127 +1727,110 @@ do_backup() {
     log " Distro : $DISTRO_PRETTY"
     log " Kernel : $(uname -r)"
     log " Cache  : $ROOTFS_CACHE"
-    if [ "$INCLUDE_HOME" = "TRUE" ]; then
+    if [ "$SEL" = "TRUE" ]; then
         log " /home  : $S_HOME_INCLUDED"
     else
         log " /home  : $S_HOME_EXCLUDED"
     fi
     log "══════════════════════════════════════════"
 
-    # ── Versioning: snapper (preferito) | btrfs raw | nessuno ─
-    local MODE_V
-    MODE_V=$(versioning_mode)
-    log "Versioning mode: $MODE_V"
-    case "$MODE_V" in
-        snapper)
-            if init_snapper_config; then
-                create_snapper_snapshot
-                prune_snapper_snapshots
-            fi
-            ;;
-        btrfs)
-            init_btrfs_subvolume
-            if [ $? -eq 0 ] && sudo btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
-                create_snapshot
-                prune_snapshots
-            fi
-            ;;
-        *)
-            sudo mkdir -p "$ROOTFS_CACHE"
-            ;;
-    esac
-
-    local RSYNC_OPTS="-aAXH --numeric-ids --one-file-system --delete"
-    build_common_excludes
-    local RSYNC_EXCL=("${COMMON_EXCL[@]}")
-
-    # Aggiungi esclusione /home solo se non inclusa
-    if [ "$INCLUDE_HOME" != "TRUE" ]; then
-        RSYNC_EXCL+=(--exclude=/home/* --exclude=/root/*)
-    fi
-
-    if [ "$MODE" = "incremental" ]; then
-        RSYNC_OPTS="$RSYNC_OPTS --update"
-        log "$S_BACKUP_MODE_INC"
-    else
-        log "$S_BACKUP_MODE_FULL"
-    fi
-    log "$S_BACKUP_RSYNC_START"
-
-    sudo rsync $RSYNC_OPTS "${RSYNC_EXCL[@]}" \
-        --info=progress2 / "$ROOTFS_CACHE" 2>&1 | \
-        while IFS= read -r line; do log "$line"; done
-
-    local EXIT_CODE=${PIPESTATUS[0]}
-
-    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 24 ]; then
-        write_meta
-        log ""; log "✓ Backup OK — $(sudo du -sh "$ROOTFS_CACHE" | cut -f1)"
+    if backup_core "$MODE" "$SEL"; then
+        INCLUDE_HOME="$SEL"
+        write_conf
+        local size
+        size=$(du -sh "$ROOTFS_CACHE" 2>/dev/null | cut -f1)
+        log ""; log "✓ Backup OK — $size"
         close_log_window
+        release_lock
+        mn_set "$S_BTN_OK"
         yad --info \
             --title="$S_BACKUP_OK_TITLE" \
-            ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-            ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
+            ${LOGO:+--window-icon="$LOGO"} \
+            ${LOGO:+--image="$LOGO"} \
             --text="$S_BACKUP_OK_TEXT\n\n\
-<b>Distro:</b> $DISTRO_PRETTY\n\
+<b>Distro:</b> $(esc "$DISTRO_PRETTY")\n\
 <b>$S_KERNEL:</b> $(uname -r)\n\
 <b>$S_BACKUP_OK_DATE:</b> $(date '+%Y-%m-%d %H:%M')\n\
-<b>$S_BACKUP_OK_SIZE:</b> $(sudo du -sh "$ROOTFS_CACHE" | cut -f1)\n\
-<b>$S_CACHE:</b> $ROOTFS_CACHE" \
-            --button="$S_BTN_OK" --width=480 --height=240 \
-            --fixed --center 2>/dev/null
+<b>$S_BACKUP_OK_SIZE:</b> $size\n\
+<b>$S_CACHE:</b> $(esc "$ROOTFS_CACHE")" \
+            --button="${MNB[0]}" --width=480 --height=240 --center 2>/dev/null
     else
-        log ""; log "✗ Backup ERROR (exit: $EXIT_CODE)"
+        log ""; log "✗ Backup ERROR: $BACKUP_ERR"
         close_log_window
+        release_lock
+        mn_set "$S_BTN_OK"
         yad --error \
             --title="$S_BACKUP_ERR_TITLE" \
-            ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-            --text="$S_BACKUP_ERR_TEXT\n\nrsync exit code: $EXIT_CODE\n\n$S_LOG: $LOG_FILE" \
-            --button="$S_BTN_OK" --width=400 --height=180 \
-            --fixed --center 2>/dev/null
+            ${LOGO:+--window-icon="$LOGO"} \
+            --text="$S_BACKUP_ERR_TEXT\n\n$(esc "$BACKUP_ERR")\n\n$S_LOG: $LOG_FILE\n\n<tt>$(error_tail)</tt>" \
+            --button="${MNB[0]}" --width=480 --center 2>/dev/null
     fi
 }
 
 ############################################################
-# RESTORE — usa --delete con exclude simmetriche al backup,
-# protegge /home /root /boot/efi /snap e gli altri path runtime
+# RESTORE — the cache must be a complete system of this distribution
 ############################################################
+restore_done_dialogs() {  # $1 = TRUE|FALSE home restored   $2 = label text
+    local protected
+    if [ "$1" = "TRUE" ]; then
+        protected="<b>/boot/efi ✓   /snap ✓</b>"
+    else
+        protected="$S_RESTORE_OK_PROTECTED"
+    fi
+    mn_set "$S_BTN_REBOOT_NOW" "$S_BTN_REBOOT_LATER"
+    yad --info \
+        --title="$S_RESTORE_OK_TITLE" \
+        ${LOGO:+--window-icon="$LOGO"} \
+        ${LOGO:+--image="$LOGO"} \
+        --text="$S_RESTORE_OK_TEXT\n\n$2\n\n${protected}\n\n$S_RESTORE_OK_REBOOT" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
+        --buttons-layout=spread \
+        --width=480 --height=300 --center 2>/dev/null
+    [ $? -eq 10 ] && systemctl reboot
+}
+
 do_restore() {
     read_meta
+    if [ ! -f "$CACHE_META" ] || ! verify_restore_source "$ROOTFS_CACHE"; then
+        error_dialog "$S_ERR_CACHE_INCOMPLETE"
+        return
+    fi
 
-    # ── Dialog conferma con opzione ripristino /home ──────────
+    local OPT_RESULT RESTORE_HOME UNDERSTAND
+    mn_set "$S_BTN_CANCEL" "$S_BTN_YES_RESTORE"
     OPT_RESULT=$(yad --form \
         --title="$S_RESTORE_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
+        ${LOGO:+--image="$LOGO"} \
         --image-on-top \
         --separator="|" \
         --text="$S_RESTORE_WARN_TITLE\n\n\
 $S_RESTORE_WARN_TEXT\n\n\
 $S_RESTORE_INFO_TITLE\n\
-  • $S_RESTORE_INFO_DATE:    <b>$META_DATE</b>\n\
-  • $S_RESTORE_INFO_DISTRO:  <b>$META_DISTRO</b>\n\
-  • $S_RESTORE_INFO_KERNEL:  <b>$META_KERNEL</b>\n\
-  • $S_RESTORE_INFO_SIZE:    <b>$META_SIZE</b>\n\n\
+  • $S_RESTORE_INFO_DATE:    <b>$(esc "$META_DATE")</b>\n\
+  • $S_RESTORE_INFO_DISTRO:  <b>$(esc "$META_DISTRO")</b>\n\
+  • $S_RESTORE_INFO_KERNEL:  <b>$(esc "$META_KERNEL")</b>\n\
+  • $S_RESTORE_INFO_SIZE:    <b>$(esc "$META_SIZE")</b>\n\n\
 $S_HOME_INCLUDE_WARN\n" \
         --field="$S_HOME_INCLUDE:":CHK "FALSE" \
-        --button="$S_BTN_CANCEL" \
-        --button="$S_BTN_YES_RESTORE" \
+        --field="$S_UNDERSTAND_RESTORE:":CHK "FALSE" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
         --buttons-layout=spread \
         --width=520 --height=500 --center 2>/dev/null)
-
     [ $? -ne 0 ] && return
 
-    local RESTORE_HOME
-    RESTORE_HOME=$(echo "$OPT_RESULT" | cut -d'|' -f1)
-
-    # Exclude simmetriche al backup (necessario con --delete attivo)
-    build_common_excludes
-    local RSYNC_EXCL=("${COMMON_EXCL[@]}")
-    # /home e /root: esclusi per default, ripristinati solo se richiesto
-    if [ "$RESTORE_HOME" != "TRUE" ]; then
-        RSYNC_EXCL+=(--exclude=/home --exclude=/home/* --exclude=/root --exclude=/root/*)
+    RESTORE_HOME=$(cut -d'|' -f1 <<< "$OPT_RESULT")
+    UNDERSTAND=$(cut -d'|' -f2 <<< "$OPT_RESULT")
+    if [ "$UNDERSTAND" != "TRUE" ]; then error_dialog "$S_ERR_UNDERSTAND"; return; fi
+    [ "$RESTORE_HOME" = "TRUE" ] || RESTORE_HOME="FALSE"
+    # --delete would erase every home directory if the backup never held them.
+    if [ "$RESTORE_HOME" = "TRUE" ] && [ "$META_HOME" != "TRUE" ]; then
+        error_dialog "$S_ERR_NO_HOME_BACKUP"
+        return
     fi
+    if ! acquire_lock; then error_dialog "$S_ERR_BUSY"; return; fi
 
     open_log_window
     log "══════════════════════════════════════════"
@@ -1614,136 +1847,109 @@ $S_HOME_INCLUDE_WARN\n" \
     log "══════════════════════════════════════════"
     log "$S_RESTORE_RSYNC_START"
 
-    sudo rsync -aAXH --numeric-ids --delete --delete-after \
-        "${RSYNC_EXCL[@]}" \
-        --info=progress2 \
-        "$ROOTFS_CACHE/" / 2>&1 | \
-        while IFS= read -r line; do log "$line"; done
-
-    local EXIT_CODE=${PIPESTATUS[0]}
-
-    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 24 ]; then
+    if restore_core "$ROOTFS_CACHE" "$RESTORE_HOME"; then
         log ""; log "✓ Restore OK"
         close_log_window
-
-        # Testo protetti dinamico in base alla scelta
-        if [ "$RESTORE_HOME" = "TRUE" ]; then
-            PROTECTED_TEXT="<b>/boot/efi ✓   /snap ✓</b>"
-        else
-            PROTECTED_TEXT="$S_RESTORE_OK_PROTECTED"
-        fi
-
-        yad --info \
-            --title="$S_RESTORE_OK_TITLE" \
-            ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-            ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
-            --text="$S_RESTORE_OK_TEXT\n\n\
-$S_RESTORE_OK_DATE\n<b>$META_DATE</b>\n\n\
-${PROTECTED_TEXT}\n\n\
-$S_RESTORE_OK_REBOOT" \
-            --button="$S_BTN_REBOOT_NOW" \
-            --button="$S_BTN_REBOOT_LATER" \
-            --buttons-layout=spread \
-            --width=480 --height=300 \
-            --fixed --center 2>/dev/null
-        [ $? -eq 10 ] && sudo reboot
+        release_lock
+        restore_done_dialogs "$RESTORE_HOME" "$S_RESTORE_OK_DATE\n<b>$(esc "$META_DATE")</b>"
     else
-        log ""; log "✗ Restore ERROR (exit: $EXIT_CODE)"
+        log ""; log "✗ Restore ERROR: $BACKUP_ERR"
         close_log_window
+        release_lock
+        mn_set "$S_BTN_OK"
         yad --error \
             --title="$S_RESTORE_ERR_TITLE" \
-            ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-            --text="$S_RESTORE_ERR_TEXT\n\nrsync exit code: $EXIT_CODE\n\n$S_LOG: $LOG_FILE" \
-            --button="$S_BTN_OK" --width=400 --height=180 \
-            --fixed --center 2>/dev/null
+            ${LOGO:+--window-icon="$LOGO"} \
+            --text="$S_RESTORE_ERR_TEXT\n\n$(esc "$BACKUP_ERR")\n\n$S_LOG: $LOG_FILE\n\n<tt>$(error_tail)</tt>" \
+            --button="${MNB[0]}" --width=480 --center 2>/dev/null
     fi
 }
 
 ############################################################
-# RESTORE DA SNAPSHOT
+# RESTORE FROM SNAPSHOT
 ############################################################
 do_restore_snapshot() {
-    # Lista unificata: snapper se disponibile, altrimenti btrfs legacy.
-    local snap_lines=()
+    local snap_lines=() line label snap_path list_args=() MODE_V
     mapfile -t snap_lines < <(unified_list_snapshots)
 
     if [ ${#snap_lines[@]} -eq 0 ]; then
-        yad --warning ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+        mn_set "$S_BTN_OK"
+        yad --warning ${LOGO:+--window-icon="$LOGO"} \
             --title="$S_SNAP_SELECT_TITLE" \
             --text="$S_SNAP_NO_SNAPS" \
-            --button="$S_BTN_OK" --width=380 --height=140 \
-            --fixed --center 2>/dev/null
+            --button="${MNB[0]}" --width=380 --center 2>/dev/null
         return
     fi
 
-    local MODE_V
     MODE_V=$(versioning_mode)
-
-    # Costruisce lista per yad --list con metadati
-    local list_args=()
+    local snap_date snap_distro snap_size size_kb info ud
     for line in "${snap_lines[@]}"; do
-        local label snap_path
         label="${line%%|*}"
         snap_path="${line#*|}"
-        local snap_date snap_distro snap_size
         if [ "$MODE_V" = "snapper" ]; then
-            local size_kb
-            snap_date=$(sudo snapper -c "$SNAPPER_CFG_NAME" list --type single --columns number,date 2>/dev/null \
-                        | awk -v n="$label" 'NR>2 && $1==n {for(i=2;i<=NF;i++)printf "%s ",$i; print ""}' \
-                        | sed 's/[[:space:]]*$//')
-            snap_distro=$(snapper_userdata_get "$label" distro)
-            size_kb=$(snapper_userdata_get "$label" size_kb)
-            if [ -n "$size_kb" ] && [ "$size_kb" -gt 0 ] 2>/dev/null; then
+            info=$(snapper_csv number,date,userdata | awk -F';' -v n="$label" '$1==n {print $2 ";" $3; exit}')
+            snap_date="${info%%;*}"
+            ud="${info#*;}"
+            snap_distro=$(ud_get "$ud" distro)
+            size_kb=$(ud_get "$ud" size_kb)
+            if [[ "$size_kb" =~ ^[0-9]+$ ]] && [ "$size_kb" -gt 0 ]; then
                 snap_size=$(numfmt --to=iec --suffix=B "$((size_kb*1024))" 2>/dev/null || echo "${size_kb}K")
             else
-                snap_size=$(sudo du -sh "$snap_path" 2>/dev/null | cut -f1)
+                snap_size=$(du -sh "$snap_path" 2>/dev/null | cut -f1)
             fi
+            snap_date=$(clean_value "$snap_date"); snap_distro=$(clean_value "$snap_distro")
             [ -z "$snap_date" ]   && snap_date="—"
             [ -z "$snap_distro" ] && snap_distro="—"
             [ -z "$snap_size" ]   && snap_size="—"
             list_args+=("$snap_path" "snapper #$label" "$snap_date" "$snap_distro" "$snap_size")
         else
-            local meta_file="${snap_path}.meta"
-            if [ -f "$meta_file" ]; then
-                source "$meta_file"
-                snap_date="${SNAP_DATE:-—}"
-                snap_distro="${SNAP_DISTRO:-—}"
-                snap_size="${SNAP_SIZE:-—}"
-            else
-                snap_date="—"; snap_distro="—"; snap_size="—"
-            fi
-            list_args+=("$snap_path" "$label" "$snap_date" "$snap_distro" "$snap_size")
+            read_snap_meta "${snap_path}.meta"
+            list_args+=("$snap_path" "$label" "$SNAP_DATE" "$SNAP_DISTRO" "$SNAP_SIZE")
         fi
     done
 
-    local SELECTED
+    local SELECTED SNAP_PATH
+    mn_set "$S_BTN_CANCEL" "$S_BTN_YES_RESTORE"
     SELECTED=$(yad --list \
         --title="$S_SNAP_SELECT_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
         --text="$S_SNAP_SELECT_TEXT\n" \
         --column="Path:HD" --column="Snapshot" --column="$S_RESTORE_INFO_DATE" \
         --column="$S_RESTORE_INFO_DISTRO" --column="$S_RESTORE_INFO_SIZE" \
         --width=640 --height=320 \
-        --button="$S_BTN_CANCEL:1" \
-        --button="$S_BTN_YES_RESTORE" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
         --center 2>/dev/null \
         "${list_args[@]}")
-
     [ $? -ne 0 ] && return
-    local SNAP_PATH
-    SNAP_PATH=$(echo "$SELECTED" | cut -d'|' -f1)
+    SNAP_PATH=$(cut -d'|' -f1 <<< "$SELECTED")
     [ -z "$SNAP_PATH" ] && return
-    [ ! -d "$SNAP_PATH" ] && return
 
-    # Conferma
-    yad --question \
+    # Only a path offered by the list is accepted, and it must be a whole system.
+    local known=0
+    for line in "${snap_lines[@]}"; do
+        [ "${line#*|}" = "$SNAP_PATH" ] && known=1
+    done
+    if [ "$known" -ne 1 ] || ! verify_restore_source "$SNAP_PATH"; then
+        error_dialog "$S_ERR_CACHE_INCOMPLETE"
+        return
+    fi
+
+    local CONFIRM UNDERSTAND
+    mn_set "$S_BTN_CANCEL" "$S_BTN_YES_RESTORE"
+    CONFIRM=$(yad --form \
         --title="$S_SNAP_SELECT_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        --text="$S_RESTORE_WARN_TEXT\n\n<b>Snapshot:</b> $(basename "$SNAP_PATH")\n\n$S_RESTORE_CONFIRM" \
-        --button="$S_BTN_CANCEL:1" \
-        --button="$S_BTN_YES_RESTORE" \
-        --width=460 --height=240 --fixed --center 2>/dev/null
+        ${LOGO:+--window-icon="$LOGO"} \
+        --separator="|" \
+        --text="$S_RESTORE_WARN_TEXT\n\n<b>Snapshot:</b> $(esc "$(basename "$SNAP_PATH")")\n\n$S_RESTORE_CONFIRM\n" \
+        --field="$S_UNDERSTAND_RESTORE:":CHK "FALSE" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
+        --width=460 --height=240 --center 2>/dev/null)
     [ $? -ne 0 ] && return
+    UNDERSTAND=$(cut -d'|' -f1 <<< "$CONFIRM")
+    if [ "$UNDERSTAND" != "TRUE" ]; then error_dialog "$S_ERR_UNDERSTAND"; return; fi
+    if ! acquire_lock; then error_dialog "$S_ERR_BUSY"; return; fi
 
     open_log_window
     log "══════════════════════════════════════════"
@@ -1753,341 +1959,478 @@ do_restore_snapshot() {
     log "══════════════════════════════════════════"
     log "$S_RESTORE_RSYNC_START"
 
-    build_common_excludes
-    local RSYNC_EXCL=("${COMMON_EXCL[@]}")
-    RSYNC_EXCL+=(--exclude=/home --exclude=/home/* --exclude=/root --exclude=/root/*)
-    sudo rsync -aAXH --numeric-ids --delete --delete-after --info=progress2 \
-        "${RSYNC_EXCL[@]}" \
-        "$SNAP_PATH/" / 2>&1 | while IFS= read -r line; do log "$line"; done
-
-    local EXIT_CODE=${PIPESTATUS[0]}
-
-    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 24 ]; then
+    if restore_core "$SNAP_PATH" "FALSE"; then
         log ""; log "✓ Restore from snapshot OK"
         close_log_window
-        yad --info \
-            --title="$S_RESTORE_OK_TITLE" \
-            ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-            --text="$S_RESTORE_OK_TEXT\n\n<b>Snapshot:</b> $(basename "$SNAP_PATH")\n\n$S_RESTORE_OK_PROTECTED\n\n$S_RESTORE_OK_REBOOT" \
-            --button="$S_BTN_REBOOT_LATER" \
-            --button="$S_BTN_REBOOT_NOW" \
-            --width=480 --height=280 --fixed --center 2>/dev/null
-        [ $? -eq 10 ] && sudo reboot
+        release_lock
+        restore_done_dialogs "FALSE" "<b>Snapshot:</b> $(esc "$(basename "$SNAP_PATH")")"
     else
-        log ""; log "✗ Restore ERROR (exit: $EXIT_CODE)"
+        log ""; log "✗ Restore ERROR: $BACKUP_ERR"
         close_log_window
+        release_lock
+        mn_set "$S_BTN_OK"
         yad --error \
             --title="$S_SNAP_ERR_TITLE" \
-            ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-            --text="$S_SNAP_ERR_TEXT\n\nrsync exit code: $EXIT_CODE\n\n$S_LOG: $LOG_FILE" \
-            --button="$S_BTN_OK" --width=400 --height=180 \
-            --fixed --center 2>/dev/null
+            ${LOGO:+--window-icon="$LOGO"} \
+            --text="$S_SNAP_ERR_TEXT\n\n$(esc "$BACKUP_ERR")\n\n$S_LOG: $LOG_FILE\n\n<tt>$(error_tail)</tt>" \
+            --button="${MNB[0]}" --width=480 --center 2>/dev/null
     fi
 }
 
 ############################################################
-# CRONJOB
+# SCHEDULE
 ############################################################
 do_cronjob() {
-    CURRENT_CRON=$(sudo crontab -l 2>/dev/null | grep "distroClone-backup" || echo "")
+    local CURRENT_CRON CRON_STATUS CRON_INFO RESULT EXIT_CODE
+    CURRENT_CRON=$(cron_current)
     if [ -n "$CURRENT_CRON" ]; then
         CRON_STATUS="$S_CRON_STATUS_ACTIVE"
-        CRON_INFO="<small><tt>$CURRENT_CRON</tt></small>"
+        CRON_INFO="<small><tt>$(esc "$CURRENT_CRON")</tt></small>"
     else
         CRON_STATUS="$S_CRON_STATUS_NONE"
         CRON_INFO="$S_CRON_STATUS_NOCRON"
     fi
 
+    mn_set "$S_BTN_REMOVE" "$S_BTN_CANCEL" "$S_BTN_SAVE"
     RESULT=$(yad --form \
         --title="$S_CRON_DIALOG_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
+        ${LOGO:+--image="$LOGO"} \
         --image-on-top \
         --width=540 --height=460 \
         --text="$S_CRON_DIALOG_HEADER\n\n\
-<b>Status:</b> $CRON_STATUS\n$CRON_INFO\n\n\
+<b>$S_STATUS_LABEL:</b> $CRON_STATUS\n$CRON_INFO\n\n\
 $S_CRON_HINT\n" \
         --separator="|" \
         --field="$S_CRON_FIELD_FREQ:":CB "$S_CRON_FREQ_DAILY!$S_CRON_FREQ_WEEKLY!$S_CRON_FREQ_MONTHLY" \
         --field="$S_CRON_FIELD_DAY:":CB "$S_CRON_DAYS" \
         --field="$S_CRON_FIELD_HOUR:":NUM "2!0..23!1!0" \
-        --field="$S_CRON_FIELD_NOTIFY:":CHK "TRUE" \
-        --button="$S_BTN_REMOVE" \
-        --button="$S_BTN_CANCEL" \
-        --button="$S_BTN_SAVE" \
+        --field="$S_CRON_FIELD_NOTIFY:":CHK "$NOTIFY" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
+        --button="${MNB[2]}" \
         --buttons-layout=spread --center 2>/dev/null)
-
-    local EXIT_CODE=$?
+    EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 20 ]; then
-        sudo crontab -l 2>/dev/null | grep -v "distroClone-backup" | sudo crontab -
-        yad --info ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+        cron_remove
+        mn_set "$S_BTN_OK"
+        yad --info ${LOGO:+--window-icon="$LOGO"} \
             --title="$S_CRON_REMOVED_TITLE" \
-            --text="$S_CRON_REMOVED_TEXT\n\n<small><tt>sudo crontab -l</tt></small>" \
-            --button="$S_BTN_OK" --width=380 --height=160 --fixed --center 2>/dev/null
+            --text="$S_CRON_REMOVED_TEXT\n\n<small><tt>crontab -l</tt></small>" \
+            --button="${MNB[0]}" --width=380 --center 2>/dev/null
         return
     fi
     [ $EXIT_CODE -ne 0 ] && return
 
-    local FREQ WEEKDAY HOUR NOTIFY DOW CRON_EXPR CRON_LINE NOTIFY_CMD
-    FREQ=$(echo "$RESULT"    | cut -d'|' -f1)
-    WEEKDAY=$(echo "$RESULT" | cut -d'|' -f2)
-    HOUR=$(echo "$RESULT"    | cut -d'|' -f3 | cut -d'.' -f1)
-    NOTIFY=$(echo "$RESULT"  | cut -d'|' -f4)
-
+    local FREQ WEEKDAY HOUR NOTIFY_SEL DOW CRON_EXPR CRON_LINE
+    FREQ=$(cut -d'|' -f1 <<< "$RESULT")
+    WEEKDAY=$(cut -d'|' -f2 <<< "$RESULT")
+    HOUR=$(cut -d'|' -f3 <<< "$RESULT" | cut -d'.' -f1)
+    NOTIFY_SEL=$(cut -d'|' -f4 <<< "$RESULT")
+    [[ "$HOUR" =~ ^[0-9]+$ ]] && [ "$HOUR" -le 23 ] || HOUR=2
     DOW=$(day_to_dow "$WEEKDAY")
-
-    [ "$NOTIFY" = "TRUE" ] && \
-        NOTIFY_CMD=" && notify-send 'DistroClone Backup' '$S_CRON_NOTIFY_MSG' --icon=distroclone-backup" || \
-        NOTIFY_CMD=""
-
     CRON_EXPR=$(freq_to_cron "$FREQ" "$HOUR" "$DOW")
-    CRON_LINE="$CRON_EXPR /usr/bin/distroClone-backup --incremental-silent$NOTIFY_CMD"
-    ( sudo crontab -l 2>/dev/null | grep -v "distroClone-backup"; echo "$CRON_LINE" ) | sudo crontab -
+    [ -n "$CRON_EXPR" ] || return
 
+    # The notification choice lives in the root-owned settings, not in the crontab line.
+    NOTIFY="FALSE"; [ "$NOTIFY_SEL" = "TRUE" ] && NOTIFY="TRUE"
+    write_conf
+    CRON_LINE="$CRON_EXPR /usr/bin/distroclone-backup --incremental-silent"
+    ( crontab -l 2>/dev/null | grep -vE "$CRON_PATTERN"; echo "$CRON_LINE" ) | crontab -
+
+    mn_set "$S_BTN_OK"
     yad --info \
         --title="$S_CRON_SAVED_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
+        ${LOGO:+--image="$LOGO"} \
         --text="$S_CRON_SAVED_TEXT\n\n\
-<b>$S_CRON_FREQ_LABEL:</b> $FREQ  |  <b>$S_CRON_HOUR_LABEL:</b> $HOUR:00\n\n\
-<b>$S_CRON_EXPR_LABEL:</b>\n<small><tt>$CRON_LINE</tt></small>\n\n\
-<small>$S_CRON_VERIFY: <tt>sudo crontab -l</tt>   $S_LOG: <tt>$LOG_FILE</tt></small>" \
-        --button="$S_BTN_OK" --width=560 --height=290 \
-        --fixed --center 2>/dev/null
+<b>$S_CRON_FREQ_LABEL:</b> $(esc "$FREQ")  |  <b>$S_CRON_HOUR_LABEL:</b> $HOUR:00\n\n\
+<b>$S_CRON_EXPR_LABEL:</b>\n<small><tt>$(esc "$CRON_LINE")</tt></small>\n\n\
+<small>$S_CRON_VERIFY: <tt>crontab -l</tt>   $S_LOG: <tt>$LOG_FILE</tt></small>" \
+        --button="${MNB[0]}" --width=560 --center 2>/dev/null
 }
 
 ############################################################
-# ELIMINA CACHE
+# DELETE CACHE
 ############################################################
+delete_cache_tree() {
+    local snap
+    # Snapshots first: rm cannot remove read-only btrfs subvolumes.
+    #   snapper:  $ROOTFS_CACHE/.snapshots/N/snapshot   raw: $SNAPSHOTS_DIR/@*
+    if [ -d "$ROOTFS_CACHE/.snapshots" ]; then
+        while IFS= read -r snap; do
+            safe_cache_target "$snap" && btrfs subvolume delete "$snap" >/dev/null 2>&1
+        done < <(find "$ROOTFS_CACHE/.snapshots" -mindepth 2 -maxdepth 2 -name snapshot -type d 2>/dev/null | sort)
+        btrfs subvolume delete "$ROOTFS_CACHE/.snapshots" >/dev/null 2>&1 || true
+    fi
+    if has_snapper && snapper -c "$SNAPPER_CFG_NAME" get-config >/dev/null 2>&1; then
+        snapper -c "$SNAPPER_CFG_NAME" delete-config >/dev/null 2>&1 || true
+    fi
+    if [ -d "$SNAPSHOTS_DIR" ] && safe_cache_target "$SNAPSHOTS_DIR"; then
+        while IFS= read -r snap; do
+            safe_cache_target "$snap" || continue
+            btrfs subvolume delete "$snap" >/dev/null 2>&1 || true
+            rm -f -- "${snap}.meta" 2>/dev/null || true
+        done < <(find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d 2>/dev/null | sort)
+        if btrfs subvolume show "$SNAPSHOTS_DIR" >/dev/null 2>&1; then
+            btrfs subvolume delete "$SNAPSHOTS_DIR" >/dev/null 2>&1 || true
+        else
+            rm -rf --one-file-system -- "$SNAPSHOTS_DIR" 2>/dev/null || true
+        fi
+    fi
+    if safe_cache_target "$ROOTFS_CACHE"; then
+        if btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
+            btrfs subvolume delete "$ROOTFS_CACHE" >/dev/null 2>&1 || true
+        else
+            rm -rf --one-file-system -- "$ROOTFS_CACHE" 2>/dev/null || true
+        fi
+    fi
+    [ ! -e "$ROOTFS_CACHE" ]
+}
+
 do_delete_cache() {
     read_meta
-
-    yad --question \
+    local RES UNDERSTAND
+    mn_set "$S_BTN_CANCEL" "$S_BTN_DELETE_CONFIRM"
+    RES=$(yad --form \
         --title="$S_DELETE_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
+        --separator="|" \
         --text="$S_DELETE_TEXT\n\n\
-<b>$S_DELETE_DATE:</b> $META_DATE\n\
-<b>$S_DELETE_SIZE:</b> $META_SIZE\n\
-<b>$S_DELETE_PATH:</b> $ROOTFS_CACHE\n\n\
-$S_DELETE_WARN" \
-        --button="$S_BTN_CANCEL" \
-        --button="$S_BTN_DELETE_CONFIRM" \
-        --buttons-layout=spread --width=440 --height=280 --center 2>/dev/null
+<b>$S_DELETE_DATE:</b> $(esc "$META_DATE")\n\
+<b>$S_DELETE_SIZE:</b> $(esc "$META_SIZE")\n\
+<b>$S_DELETE_PATH:</b> $(esc "$ROOTFS_CACHE")\n\n\
+$S_DELETE_WARN\n" \
+        --field="$S_UNDERSTAND_DELETE:":CHK "FALSE" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
+        --buttons-layout=spread --width=440 --height=280 --center 2>/dev/null)
+    [ $? -ne 0 ] && return
+    UNDERSTAND=$(cut -d'|' -f1 <<< "$RES")
+    if [ "$UNDERSTAND" != "TRUE" ]; then error_dialog "$S_ERR_UNDERSTAND"; return; fi
+    if ! acquire_lock; then error_dialog "$S_ERR_BUSY"; return; fi
 
-    if [ $? -eq 0 ]; then
-        # Elimina snapshot btrfs prima del rm -rf.
-        # rm -rf non può rimuovere subvolumi btrfs read-only.
-        # Due formati supportati:
-        #   v1.2.2 raw:  $SNAPSHOTS_DIR/@YYYY-MM-DD_HH:MM  (subvolume diretto)
-        #   v1.3 snapper: $SNAPSHOTS_DIR/N/snapshot         (subvolume annidato)
-        if [ -d "$SNAPSHOTS_DIR" ]; then
-            # Snapper format: N/snapshot (read-only subvolumes, foglie dell'albero)
-            while IFS= read -r snap; do
-                sudo btrfs subvolume delete "$snap" 2>/dev/null || true
-            done < <(find "$SNAPSHOTS_DIR" -mindepth 2 -maxdepth 2 -name 'snapshot' -type d 2>/dev/null | sort)
-            # Raw format: @* (vecchio v1.2.2)
-            while IFS= read -r snap; do
-                sudo btrfs subvolume delete "$snap" 2>/dev/null || true
-                sudo rm -f "${snap}.meta" 2>/dev/null || true
-            done < <(find "$SNAPSHOTS_DIR" -maxdepth 1 -name '@*' -type d 2>/dev/null | sort)
-            # .snapshots è a sua volta un subvolume btrfs (snapper lo crea così)
-            if sudo btrfs subvolume show "$SNAPSHOTS_DIR" >/dev/null 2>&1; then
-                sudo btrfs subvolume delete "$SNAPSHOTS_DIR" 2>/dev/null || true
-            else
-                sudo rm -rf "$SNAPSHOTS_DIR" 2>/dev/null || true
-            fi
-        fi
-        # Rimuove la cache principale (subvolume btrfs o directory normale)
-        if sudo btrfs subvolume show "$ROOTFS_CACHE" >/dev/null 2>&1; then
-            sudo btrfs subvolume delete "$ROOTFS_CACHE" 2>/dev/null || true
-        else
-            sudo rm -rf "$ROOTFS_CACHE" 2>/dev/null || true
-        fi
-        sudo rm -f "$CACHE_META" 2>/dev/null || true
-        sudo crontab -l 2>/dev/null | grep -v "distroClone-backup" | sudo crontab - 2>/dev/null || true
-        yad --info ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+    if delete_cache_tree; then
+        rm -f -- "$CACHE_META" 2>/dev/null || true
+        cron_remove
+        release_lock
+        mn_set "$S_BTN_OK"
+        yad --info ${LOGO:+--window-icon="$LOGO"} \
             --title="$S_DELETE_OK_TITLE" \
             --text="$S_DELETE_OK_TEXT" \
-            --button="$S_BTN_OK" --width=340 --height=140 --fixed --center 2>/dev/null
+            --button="${MNB[0]}" --width=340 --center 2>/dev/null
+    else
+        release_lock
+        error_dialog "$S_DELETE_ERR"
     fi
 }
 
 ############################################################
-# FUNZIONE: IMPOSTAZIONI
+# SETTINGS
 ############################################################
 do_settings() {
-    local CURRENT_DIR="${CACHE_BASE_DIR:-/mnt}"
+    local CURRENT_DIR="${CACHE_BASE_DIR:-/mnt}" NEW_DIR ADV_RESULT NEW_MAX_SNAPS OLD_DIR
 
-    # ── Passo 1: selezione directory ─────────────────────────
-    local NEW_DIR
+    mn_set "$S_BTN_CANCEL" "$S_BTN_SAVE"
     NEW_DIR=$(yad --file-selection --directory \
         --title="$S_SETTINGS_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
         --filename="${CURRENT_DIR}/" \
-        --button="$S_BTN_CANCEL:1" \
-        --button="$S_BTN_SAVE" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
         --center 2>/dev/null)
-
     [ $? -ne 0 ] && return
     [ -z "$NEW_DIR" ] && return
+    NEW_DIR="${NEW_DIR%/}"
+    [ -n "$NEW_DIR" ] || NEW_DIR="/"
 
-    if [ ! -d "$NEW_DIR" ]; then
-        yad --warning ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+    if ! valid_dir_path "$NEW_DIR" || [ ! -d "$NEW_DIR" ] || [ -L "$NEW_DIR" ]; then
+        mn_set "$S_BTN_OK"
+        yad --warning ${LOGO:+--window-icon="$LOGO"} \
             --title="$S_SETTINGS_TITLE" \
             --text="$S_SETTINGS_WARN_DIR" \
-            --button="$S_BTN_OK" --width=380 --height=140 \
-            --fixed --center 2>/dev/null
+            --button="${MNB[0]}" --width=380 --center 2>/dev/null
         return
     fi
+    OLD_DIR="$CACHE_BASE_DIR"
+    CACHE_BASE_DIR="$NEW_DIR"
+    if ! cache_fs_ok; then
+        CACHE_BASE_DIR="$OLD_DIR"
+        error_dialog "$S_ERR_FS"
+        return
+    fi
+    CACHE_BASE_DIR="$OLD_DIR"
 
-    # ── Passo 2: opzioni avanzate (max snapshot) ─────────────
-    local ADV_RESULT
+    mn_set "$S_BTN_CANCEL" "$S_BTN_SAVE"
     ADV_RESULT=$(yad --form \
         --title="$S_SETTINGS_TITLE" \
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-        ${TEMP_LOGO:+--image="$TEMP_LOGO"} \
+        ${LOGO:+--window-icon="$LOGO"} \
+        ${LOGO:+--image="$LOGO"} \
         --image-on-top \
         --width=480 --height=260 \
-        --text="$S_SETTINGS_HEADER\n\n<b>$S_SETTINGS_CACHE_DIR:</b> <tt>$NEW_DIR</tt>\n\n$S_SETTINGS_CACHE_HINT\n" \
+        --text="$S_SETTINGS_HEADER\n\n<b>$S_SETTINGS_CACHE_DIR:</b> <tt>$(esc "$NEW_DIR")</tt>\n\n$S_SETTINGS_CACHE_HINT\n" \
         --separator="|" \
         --field="$S_SETTINGS_MAX_SNAPS":NUM "${MAX_SNAPSHOTS:-3}!0..20!1!0" \
-        --button="$S_BTN_CANCEL:1" \
-        --button="$S_BTN_SAVE" \
+        --button="${MNB[0]}" \
+        --button="${MNB[1]}" \
         --center 2>/dev/null)
-
     [ $? -ne 0 ] && return
-
-    local NEW_MAX_SNAPS
-    NEW_MAX_SNAPS=$(echo "$ADV_RESULT" | cut -d'|' -f1)
+    NEW_MAX_SNAPS=$(cut -d'|' -f1 <<< "$ADV_RESULT" | cut -d'.' -f1)
+    [[ "$NEW_MAX_SNAPS" =~ ^[0-9]{1,2}$ ]] || NEW_MAX_SNAPS=3
 
     CACHE_BASE_DIR="$NEW_DIR"
-    MAX_SNAPSHOTS="${NEW_MAX_SNAPS:-3}"
+    MAX_SNAPSHOTS="$NEW_MAX_SNAPS"
+    write_conf
+    set_paths
 
-    # Salva nel conf file
-    {
-        echo "CACHE_BASE_DIR=\"$CACHE_BASE_DIR\""
-        echo "MAX_SNAPSHOTS=\"$MAX_SNAPSHOTS\""
-    } > "$CONF_FILE"
-
-    # Aggiorna percorsi live
-    CACHE_BASE="${CACHE_BASE_DIR}/${DISTRO_ID}_backup"
-    ROOTFS_CACHE="${CACHE_BASE}/.rootfs_cache"
-    CACHE_META="${CACHE_BASE}/.backup_meta"
-    SNAPSHOTS_DIR="${CACHE_BASE}/.snapshots"
-
-    yad --info ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
+    mn_set "$S_BTN_OK"
+    yad --info ${LOGO:+--window-icon="$LOGO"} \
         --title="$S_SETTINGS_TITLE" \
-        --text="$S_SETTINGS_SAVED\n\n<b>Cache:</b> <tt>$ROOTFS_CACHE</tt>" \
-        --button="$S_BTN_OK" --width=440 --height=160 \
-        --fixed --center 2>/dev/null
+        --text="$S_SETTINGS_SAVED\n\n<b>Cache:</b> <tt>$(esc "$ROOTFS_CACHE")</tt>" \
+        --button="${MNB[0]}" --width=440 --center 2>/dev/null
 }
 
 ############################################################
-# MENU PRINCIPALE — LOOP con array bash
+# MAIN MENU
 ############################################################
-while true; do
-    read_meta
+no_cache_warning() {
+    mn_set "$S_BTN_OK"
+    yad --warning ${LOGO:+--window-icon="$LOGO"} \
+        --title="$S_WARN_NO_CACHE_TITLE" \
+        --text="$S_WARN_NO_CACHE" \
+        --button="${MNB[0]}" --width=380 --center 2>/dev/null
+}
 
-    if [ -d "$ROOTFS_CACHE" ]; then
-        CACHE_STATUS_TEXT="<span color='#2e7d32'>$S_CACHE_PRESENT</span>"
-        CACHE_INFO_TEXT="$S_CACHE_DATA: <b>$META_DATE</b>   |   $S_CACHE_DISTRO: <b>$META_DISTRO</b>   |   $S_CACHE_SIZE: <b>$META_SIZE</b>"
-    else
-        CACHE_STATUS_TEXT="<span color='#c62828'>$S_CACHE_ABSENT</span>"
-        CACHE_INFO_TEXT="$S_CACHE_RUN_FULL"
+menu_loop() {
+    local CACHE_STATUS_TEXT CACHE_INFO_TEXT CURRENT_CRON CRON_INFO_TEXT BTRFS_TEXT
+    local MODE_V SNAP_COUNT EXIT_CODE b
+    local -a specs YAD_CMD
+    while true; do
+        read_meta
+
+        if [ -d "$ROOTFS_CACHE" ]; then
+            CACHE_STATUS_TEXT="$S_CACHE_PRESENT"
+            CACHE_INFO_TEXT="$S_CACHE_DATA: <b>$(esc "$META_DATE")</b>   |   $S_CACHE_DISTRO: <b>$(esc "$META_DISTRO")</b>   |   $S_CACHE_SIZE: <b>$(esc "$META_SIZE")</b>"
+        else
+            CACHE_STATUS_TEXT="<b>$S_CACHE_ABSENT</b>"
+            CACHE_INFO_TEXT="$S_CACHE_RUN_FULL"
+        fi
+
+        CURRENT_CRON=$(cron_current)
+        if [ -n "$CURRENT_CRON" ]; then
+            CRON_INFO_TEXT="$S_CRON_ACTIVE   <small><tt>$(esc "$(echo "$CURRENT_CRON" | awk '{print $1,$2,$3,$4,$5}')")</tt></small>"
+        else
+            CRON_INFO_TEXT="$S_CRON_NONE"
+        fi
+
+        MODE_V=$(versioning_mode)
+        SNAP_COUNT=0
+        case "$MODE_V" in
+            snapper)
+                SNAP_COUNT=$(unified_list_snapshots | wc -l)
+                if [ "$SNAP_COUNT" -gt 0 ]; then
+                    BTRFS_TEXT="$S_BTRFS_AVAILABLE   <small>(snapper · $SNAP_COUNT $S_SNAPSHOTS_COUNT)</small>"
+                else
+                    BTRFS_TEXT="$S_BTRFS_AVAILABLE   <small>(snapper · $S_SNAPSHOTS_NONE)</small>"
+                fi
+                ;;
+            btrfs)
+                SNAP_COUNT=$(list_snapshots | wc -l)
+                if [ "$SNAP_COUNT" -gt 0 ]; then
+                    BTRFS_TEXT="$S_BTRFS_AVAILABLE   <small>(btrfs raw · $SNAP_COUNT $S_SNAPSHOTS_COUNT)</small>"
+                else
+                    BTRFS_TEXT="$S_BTRFS_AVAILABLE   <small>(btrfs raw · $S_SNAPSHOTS_NONE)</small>"
+                fi
+                ;;
+            *)
+                BTRFS_TEXT="$S_BTRFS_NOT_AVAILABLE"
+                ;;
+        esac
+
+        specs=("${S_BTN_EXIT}:99" "${S_BTN_BACKUP_FULL}:10" "${S_BTN_BACKUP_INC}:11"
+               "${S_BTN_RESTORE}:20" "${S_BTN_SCHEDULE}:40" "${S_BTN_SETTINGS}:50")
+        [ -d "$ROOTFS_CACHE" ] && specs+=("${S_BTN_DELETE_CACHE}:30")
+        [ "$MODE_V" != "none" ] && [ "$SNAP_COUNT" -gt 0 ] && specs+=("${S_BTN_RESTORE_SNAP}:45")
+        mn_set "${specs[@]}"
+
+        YAD_CMD=(
+            yad --form
+            --title="$S_APP_TITLE_WIN $DCB_VERSION"
+            ${LOGO:+--window-icon="$LOGO"}
+            ${LOGO:+--image="$LOGO"}
+            --image-on-top
+            --width=660 --height=540
+            --text="<big><b>$S_APP_TITLE</b></big>\n<i>$S_APP_SUBTITLE</i>\n\n<b>$S_SYSTEM:</b> $(esc "$DISTRO_PRETTY")  |  <b>$S_KERNEL:</b> $(uname -r)\n\n<b>$S_CACHE:</b>   $CACHE_STATUS_TEXT\n<small>$CACHE_INFO_TEXT</small>\n\n<b>$S_VERSIONING_LABEL:</b> $BTRFS_TEXT\n\n<b>$S_CRONJOB:</b> $CRON_INFO_TEXT\n\n<small>$S_CACHE: $(esc "$ROOTFS_CACHE")\n$S_LOG:   $LOG_FILE</small>\n"
+        )
+        for b in "${MNB[@]}"; do YAD_CMD+=(--button="$b"); done
+        YAD_CMD+=(--buttons-layout=spread --center)
+
+        "${YAD_CMD[@]}" 2>/dev/null
+        EXIT_CODE=$?
+
+        case $EXIT_CODE in
+            10) do_backup "full" ;;
+            11) if [ ! -d "$ROOTFS_CACHE" ]; then no_cache_warning; else do_backup "incremental"; fi ;;
+            20) if [ ! -d "$ROOTFS_CACHE" ]; then no_cache_warning; else do_restore; fi ;;
+            30) do_delete_cache ;;
+            40) do_cronjob ;;
+            45) do_restore_snapshot ;;
+            50) do_settings ;;
+            *)  break ;;
+        esac
+    done
+}
+
+# ── Root stage: started by pkexec (or by root directly) ──────
+gui_root_main() {
+    local display="" xauth="" lang=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --lang)       lang="${2:-}"; shift 2 || shift ;;
+            --display)    display="${2:-}"; shift 2 || shift ;;
+            --xauthority) xauth="${2:-}"; shift 2 || shift ;;
+            *) shift ;;
+        esac
+    done
+    if [[ "$lang" =~ ^(en|it|de|fr|es|ru)$ ]]; then LANG_CODE="$lang"; load_strings; fi
+    export LC_ALL=C.UTF-8
+
+    # pkexec starts with a clean environment: take the display from the
+    # caller, but only in a validated form.
+    local uid="${PKEXEC_UID:-${SUDO_UID:-}}" home=""
+    if [[ "$uid" =~ ^[0-9]+$ ]]; then home=$(getent passwd "$uid" | cut -d: -f6); fi
+    if [[ "$display" =~ ^:[0-9]{1,3}(\.[0-9]{1,2})?$ ]]; then export DISPLAY="$display"; fi
+    if [ -n "$xauth" ] && [ -f "$xauth" ] && [ ! -L "$xauth" ] \
+       && { [ -z "$uid" ] || [ "$(stat -c %u "$xauth" 2>/dev/null)" = "$uid" ]; }; then
+        export XAUTHORITY="$xauth"
     fi
 
-    CURRENT_CRON=$(sudo crontab -l 2>/dev/null | grep "distroClone-backup" || echo "")
-    if [ -n "$CURRENT_CRON" ]; then
-        CRON_INFO_TEXT="<span color='#2e7d32'>$S_CRON_ACTIVE</span>   <small><tt>$(echo "$CURRENT_CRON" | awk '{print $1,$2,$3,$4,$5}')</tt></small>"
-    else
-        CRON_INFO_TEXT="<span color='#888888'>$S_CRON_NONE</span>"
+    local dep
+    for dep in yad rsync flock findmnt; do
+        command -v "$dep" >/dev/null 2>&1 || { echo "distroclone-backup: $dep is required" >&2; exit 1; }
+    done
+
+    load_os_release
+    parse_conf "$CONF_FILE"
+    import_legacy_conf "$home"
+    parse_conf "$CONF_FILE"
+    set_paths
+    init_log
+
+    if [ -f "/usr/share/distroclone-backup/distroclone-bkp-logo.png" ]; then
+        LOGO="/usr/share/distroclone-backup/distroclone-bkp-logo.png"
+    elif [ -f "/usr/share/icons/hicolor/128x128/apps/distroclone-backup.png" ]; then
+        LOGO="/usr/share/icons/hicolor/128x128/apps/distroclone-backup.png"
     fi
 
-    # ── Stato versioning (snapper | btrfs raw | none) ────────
-    MODE_V=$(versioning_mode)
-    SNAP_COUNT=0
-    case "$MODE_V" in
-        snapper)
-            SNAP_COUNT=$(unified_list_snapshots | wc -l)
-            if [ "$SNAP_COUNT" -gt 0 ]; then
-                BTRFS_TEXT="<span color='#1565c0'>$S_BTRFS_AVAILABLE   <small>(snapper · $SNAP_COUNT $S_SNAPSHOTS_COUNT)</small></span>"
-            else
-                BTRFS_TEXT="<span color='#1565c0'>$S_BTRFS_AVAILABLE   <small>(snapper · $S_SNAPSHOTS_NONE)</small></span>"
-            fi
+    trap 'cleanup_gui 130' INT TERM
+    trap 'cleanup_gui $?' EXIT
+
+    # First start: ask where the cache lives.
+    if [ ! -f "$CONF_FILE" ] && [ ! -d "$ROOTFS_CACHE" ]; then
+        local FIRST_DIR
+        mn_set "$S_BTN_CANCEL" "$S_BTN_OK"
+        FIRST_DIR=$(yad --file-selection --directory \
+            --title="$S_SETTINGS_TITLE" \
+            ${LOGO:+--window-icon="$LOGO"} \
+            --filename="/mnt/" \
+            --text="$S_SETTINGS_HEADER\n\n$S_SETTINGS_CACHE_DIR\n\n$S_SETTINGS_CACHE_HINT" \
+            --button="${MNB[0]}" \
+            --button="${MNB[1]}" \
+            --center 2>/dev/null)
+        FIRST_DIR="${FIRST_DIR%/}"
+        if [ -n "$FIRST_DIR" ] && valid_dir_path "$FIRST_DIR" && [ -d "$FIRST_DIR" ] && [ ! -L "$FIRST_DIR" ]; then
+            CACHE_BASE_DIR="$FIRST_DIR"
+            write_conf
+            set_paths
+        fi
+    fi
+
+    menu_loop
+    exit 0
+}
+
+# ── User stage: ask polkit for the administrator rights ──────
+gui_user_main() {
+    if ! command -v yad >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1; then
+        echo "distroclone-backup: yad and rsync are required" >&2
+        exit 1
+    fi
+    if [ "$EUID" -eq 0 ]; then
+        gui_root_main --lang "$LANG_CODE" --display "${DISPLAY:-}" --xauthority "${XAUTHORITY:-}"
+        return
+    fi
+    command -v pkexec >/dev/null 2>&1 || { echo "distroclone-backup: pkexec is required" >&2; exit 1; }
+
+    # Launched from a menu the display variables may be missing.
+    local l envf d uid xa
+    uid=$(id -u)
+    if [ -z "$DISPLAY" ] && command -v systemctl >/dev/null 2>&1; then
+        while IFS= read -r l; do
+            case "$l" in
+                DISPLAY=*)    export DISPLAY="${l#DISPLAY=}" ;;
+                XAUTHORITY=*) export XAUTHORITY="${l#XAUTHORITY=}" ;;
+            esac
+        done < <(XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user show-environment 2>/dev/null \
+                    | grep -E '^(DISPLAY|XAUTHORITY)=')
+    fi
+    if [ -z "$DISPLAY" ]; then
+        for envf in /proc/[0-9]*/environ; do
+            [ "$(stat -c %u "$envf" 2>/dev/null)" = "$uid" ] || continue
+            d=$(tr '\0' '\n' < "$envf" 2>/dev/null | grep '^DISPLAY=' | head -n 1)
+            if [ -n "$d" ]; then export DISPLAY="${d#DISPLAY=}"; break; fi
+        done
+    fi
+    [ -z "$DISPLAY" ] && export DISPLAY=":0"
+    if [ -z "$XAUTHORITY" ]; then
+        for xa in "/run/user/${uid}/gdm/Xauthority" "$HOME/.Xauthority"; do
+            if [ -f "$xa" ]; then export XAUTHORITY="$xa"; break; fi
+        done
+    fi
+
+    local self="$DCB_SELF_INSTALLED" rc
+    [ -x "$self" ] || self="$(readlink -f "$0")"
+    pkexec "$self" --gui-root --lang "$LANG_CODE" --display "$DISPLAY" --xauthority "${XAUTHORITY:-}"
+    rc=$?
+    if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
+        yad --error --title="$S_APP_TITLE_WIN" --text="$(esc "$S_ERR_AUTH")" \
+            --button="OK:0" --center 2>/dev/null
+    fi
+    exit "$rc"
+}
+
+usage() {
+    cat <<EOF
+Usage: distroclone-backup [OPTION]
+  (no option)            open the graphical interface
+  --incremental-silent   incremental backup without interface (cron; root)
+  --import-conf          import settings of earlier versions (root)
+  --version              print the version
+  --help                 print this help
+EOF
+}
+
+main() {
+    case "${1:-}" in
+        "")                    gui_user_main ;;
+        --gui-root)            shift; gui_root_main "$@" ;;
+        --incremental-silent)
+            [ "$EUID" -eq 0 ] || { echo "distroclone-backup: must run as root" >&2; exit 1; }
+            cron_main
+            exit $?
             ;;
-        btrfs)
-            SNAP_COUNT=$(list_snapshots | wc -l)
-            if [ "$SNAP_COUNT" -gt 0 ]; then
-                BTRFS_TEXT="<span color='#1565c0'>$S_BTRFS_AVAILABLE   <small>(btrfs raw · $SNAP_COUNT $S_SNAPSHOTS_COUNT)</small></span>"
-            else
-                BTRFS_TEXT="<span color='#1565c0'>$S_BTRFS_AVAILABLE   <small>(btrfs raw · $S_SNAPSHOTS_NONE)</small></span>"
-            fi
+        --import-conf)
+            [ "$EUID" -eq 0 ] || { echo "distroclone-backup: must run as root" >&2; exit 1; }
+            import_legacy_conf
+            exit 0
             ;;
-        *)
-            BTRFS_TEXT="<span color='#888888'>$S_BTRFS_NOT_AVAILABLE</span>"
-            ;;
+        --version)             echo "distroclone-backup $DCB_VERSION"; exit 0 ;;
+        --help|-h)             usage; exit 0 ;;
+        *)                     usage >&2; exit 2 ;;
     esac
+}
 
-    YAD_CMD=(
-        yad --form
-        --title="$S_APP_TITLE_WIN v1.3.0"
-        ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"}
-        ${TEMP_LOGO:+--image="$TEMP_LOGO"}
-        --image-on-top
-        --width=660 --height=540
-        --text="<big><b>$S_APP_TITLE</b></big>\n<i>$S_APP_SUBTITLE</i>\n\n<b>$S_SYSTEM:</b> $DISTRO_PRETTY  |  <b>$S_KERNEL:</b> $(uname -r)\n\n<b>$S_CACHE:</b>   $CACHE_STATUS_TEXT\n<span color='#555555'><small>$CACHE_INFO_TEXT</small></span>\n\n<b>Versioning:</b> $BTRFS_TEXT\n\n<b>$S_CRONJOB:</b> $CRON_INFO_TEXT\n\n<span color='#666666'><small>$S_CACHE: $ROOTFS_CACHE\n$S_LOG:   $LOG_FILE</small></span>\n"
-        --button="${S_BTN_EXIT}:99"
-        --button="${S_BTN_BACKUP_FULL}:10"
-        --button="${S_BTN_BACKUP_INC}:11"
-        --button="${S_BTN_RESTORE}:20"
-        --button="${S_BTN_SCHEDULE}:40"
-        --button="${S_BTN_SETTINGS}:50"
-    )
-
-    if [ -d "$ROOTFS_CACHE" ]; then
-        YAD_CMD+=(--button="${S_BTN_DELETE_CACHE}:30")
-    fi
-
-    if is_btrfs && [ "$SNAP_COUNT" -gt 0 ]; then
-        YAD_CMD+=(--button="${S_BTN_RESTORE_SNAP}:45")
-    fi
-
-    YAD_CMD+=(--buttons-layout=spread --center)
-
-    "${YAD_CMD[@]}" 2>/dev/null
-    EXIT_CODE=$?
-
-    case $EXIT_CODE in
-        10) do_backup "full" ;;
-        11)
-            if [ ! -d "$ROOTFS_CACHE" ]; then
-                yad --warning ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-                    --title="$S_WARN_NO_CACHE_TITLE" \
-                    --text="$S_WARN_NO_CACHE" \
-                    --button="$S_BTN_OK" --width=380 --height=160 \
-                    --fixed --center 2>/dev/null
-            else
-                do_backup "incremental"
-            fi ;;
-        20)
-            if [ ! -d "$ROOTFS_CACHE" ]; then
-                yad --warning ${TEMP_LOGO:+--window-icon="$TEMP_LOGO"} \
-                    --title="$S_WARN_NO_CACHE_TITLE" \
-                    --text="$S_WARN_NO_CACHE" \
-                    --button="$S_BTN_OK" --width=380 --height=160 \
-                    --fixed --center 2>/dev/null
-            else
-                do_restore
-            fi ;;
-        30) do_delete_cache ;;
-        40) do_cronjob ;;
-        45) do_restore_snapshot ;;
-        50) do_settings ;;
-        *)  break ;;
-    esac
-
-done
-
-[ "$TEMP_LOGO" != "$ICON_PKG" ] && rm -f "$TEMP_LOGO" 2>/dev/null
-exit 0
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

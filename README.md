@@ -5,7 +5,7 @@
 Graphical incremental rootfs backup and restore tool for Debian-based systems.
 Companion to DistroClone, the live ISO builder.
 
-Version: 1.3.6 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
+Version: 1.4.0 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
 
 ---
 
@@ -32,6 +32,11 @@ Incremental Backup
 
 Safe Restore
     Rolls back system files while always protecting /home, /root, and /boot/efi.
+    Before it starts, the backup is checked: it must be a complete system of the
+    same distribution, and filesystems mounted elsewhere (a separate /boot, /data,
+    /srv...) are never touched. /home is restored only if the backup contains it.
+    A confirmation box must be ticked, and the boot files are refreshed afterwards
+    (update-initramfs and update-grub).
 
 Cron Scheduler
     Schedule automatic backups (daily, weekly, or monthly) from the GUI.
@@ -53,10 +58,11 @@ Configurable Cache Directory
 
 Real-time Log
     Every operation is shown live in a log window and saved to
-    /var/log/distroclone-backup.log.
+    /var/log/distroclone-backup.log. The Stop button cancels a running transfer.
 
 Multilanguage
-    Auto-detected from system locale: English, Italiano, Deutsch, Francais, Espanol.
+    Auto-detected from system locale: English, Italiano, Deutsch, Francais, Espanol,
+    Russian.
 
 ---
 
@@ -65,7 +71,7 @@ Multilanguage
 - Debian-based OS (Debian Bookworm or later, Ubuntu 22.04 or later, Mint, LMDE,
   Elementary OS, SysLinuxOS, ZorinOS 18 or later)
 - At least 5 to 15 GB of free space on the backup destination
-- Required dependencies, installed automatically: yad, rsync, imagemagick
+- Required dependencies, installed automatically: yad, rsync, pkexec (polkit), util-linux, cron
 - Recommended: btrfs-progs, snapper (for snapshot versioning on btrfs)
 
 ---
@@ -79,8 +85,8 @@ Step 1 — Via SysLinuxOS APT repository (recommended)
 
 Step 2 — Direct .deb download
 
-    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.3.6/distroclone-backup_1.3.6_all.deb
-    sudo apt install -y ./distroclone-backup_1.3.6_all.deb
+    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.4.0/distroclone-backup_1.4.0_all.deb
+    sudo apt install -y ./distroclone-backup_1.4.0_all.deb
 
 Step 3 — Install snapper (optional, for versioned snapshots on btrfs)
 
@@ -99,7 +105,10 @@ or launch it from a terminal:
 
 - yad            — GTK graphical dialog toolkit (required)
 - rsync          — Filesystem synchronisation engine (required)
-- imagemagick    — UI image generation (required)
+- pkexec         — Administrator rights through polkit (required)
+- util-linux     — flock, findmnt, runuser (required)
+- cron           — Scheduled backups (required)
+- libnotify-bin  — Desktop notification after a scheduled backup (recommended)
 - distroclone    — Companion ISO builder (recommended)
 - btrfs-progs    — Btrfs snapshot versioning (recommended)
 - snapper        — Managed snapshot retention on btrfs (recommended)
@@ -115,6 +124,11 @@ or launch it from a terminal:
         distroclone-bkp-logo.png
     /usr/share/applications/
         distroclone-backup.desktop
+    /usr/share/polkit-1/actions/
+        com.syslinuxos.distroclone-backup.policy
+    /etc/distroclone-backup/
+        settings.conf        (cache location, snapshots to keep, home, notifications)
+        exclude.list         (optional: extra rsync exclude patterns, one per line)
     /usr/share/icons/hicolor/
         48x48/apps/distroclone-backup.png
         128x128/apps/distroclone-backup.png
@@ -123,10 +137,30 @@ or launch it from a terminal:
 
 ---
 
+**Security and configuration**
+
+The program asks polkit for administrator rights when it starts (one password
+prompt); no passwordless sudo rules are installed. Settings live in the
+root-owned /etc/distroclone-backup/settings.conf, which is the only file the
+scheduled job reads. The files are parsed as plain data and every value is
+validated. Settings kept by earlier versions in a user's home are imported once.
+
+To keep extra paths out of backup and restore, list rsync patterns that start
+with / in /etc/distroclone-backup/exclude.list, for example:
+
+    /home/*/.cache
+    /var/lib/docker/*
+
+The cache is created readable by root only. Locations on FAT, exFAT or NTFS are
+refused because those filesystems drop Linux owners and permissions. A first
+full backup needs free space for the whole system.
+
+---
+
 **Supported Languages**
 
-English, Italiano, Deutsch, Francais, Espanol.
-Auto-detected from the system LANG variable.
+English, Italiano, Deutsch, Francais, Espanol, Russian.
+Auto-detected from LC_ALL, LC_MESSAGES or LANG (then LANGUAGE).
 
 ---
 

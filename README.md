@@ -5,7 +5,7 @@
 Graphical incremental rootfs backup and restore tool for Debian-based systems.
 Companion to DistroClone, the live ISO builder.
 
-Version: 1.4.0 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
+Version: 1.4.1 | License: GPL-3.0-or-later | Author: Franco Conidi aka edmond
 
 ---
 
@@ -85,8 +85,8 @@ Step 1 — Via SysLinuxOS APT repository (recommended)
 
 Step 2 — Direct .deb download
 
-    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.4.0/distroclone-backup_1.4.0_all.deb
-    sudo apt install -y ./distroclone-backup_1.4.0_all.deb
+    wget https://github.com/fconidi/distroClone-backup/releases/download/v1.4.1/distroclone-backup_1.4.1_all.deb
+    sudo apt install -y ./distroclone-backup_1.4.1_all.deb
 
 Step 3 — Install snapper (optional, for versioned snapshots on btrfs)
 
@@ -151,9 +151,8 @@ with / in /etc/distroclone-backup/exclude.list, for example:
     /home/*/.cache
     /var/lib/docker/*
 
-The cache is created readable by root only. Locations on FAT, exFAT or NTFS are
-refused because those filesystems drop Linux owners and permissions. A first
-full backup needs free space for the whole system.
+The cache is created readable by root only. Use a Linux filesystem for the
+backup location: FAT, exFAT and NTFS drop Linux owners and permissions.
 
 ---
 

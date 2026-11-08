@@ -7,6 +7,23 @@ Versioning follows Semantic Versioning (https://semver.org/).
 
 ---
 
+Version 1.4.1 — 2026-11-08
+
+Fixed
+
+    Backup and Restore System no longer fail on systems whose os-release ID
+    contains capital letters (for example SysLinuxOS).
+
+Changed
+
+    The checks added in 1.4.0 that refused an operation are removed: the free
+    space check, the refusal of FAT, exFAT and NTFS locations, and the
+    verification of the cache before a restore. Restore still needs an existing
+    backup and never enters other mounted filesystems. The extra confirmation
+    box before restore and deletion is removed; the "Yes" button confirms.
+
+---
+
 Version 1.4.0 — 2026-11-07
 
 Security

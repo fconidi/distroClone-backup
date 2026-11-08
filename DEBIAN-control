@@ -1,5 +1,5 @@
 Package: distroclone-backup
-Version: 1.4.0
+Version: 1.4.1
 Section: admin
 Priority: optional
 Architecture: all
@@ -10,8 +10,8 @@ Description: DistroClone Backup & Restore Tool
  Incremental rootfs backup and restore tool for Debian-based systems.
  Companion tool for DistroClone.
  .
- Runs through polkit; no passwordless sudo rules are installed. The cache
- is checked before a restore and other mounted filesystems are never
+ Runs through polkit; no passwordless sudo rules are installed. Other
+ mounted filesystems are never
  touched. On btrfs cache filesystems, versioning is managed through a
  dedicated snapper config ("distroclone-backup"); other filesystems use
  plain rsync without versioning.

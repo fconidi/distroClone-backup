@@ -15,7 +15,7 @@
 #  filesystems use plain rsync.
 # ============================================================
 
-DCB_VERSION="1.4.0"
+DCB_VERSION="1.4.1"
 DCB_SELF_INSTALLED="/usr/share/distroclone-backup/distroclone-backup.sh"
 
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -1081,7 +1081,7 @@ load_os_release() {
     . /etc/os-release
     DISTRO_ID="$ID"
     DISTRO_PRETTY="$PRETTY_NAME"
-    [[ "$DISTRO_ID" =~ ^[a-z0-9._-]+$ ]] || DISTRO_ID="linux"
+    [[ "$DISTRO_ID" =~ ^[A-Za-z0-9._-]+$ ]] || DISTRO_ID="linux"
 }
 
 set_paths() {
@@ -1186,36 +1186,6 @@ rsync_escape() {
         esac
     done
     printf '%s' "$out"
-}
-
-# ── Cache location checks ───────────────────────────────────
-# FAT, exFAT, NTFS and FUSE disks drop Unix owners and modes: /etc/shadow and
-# SSH keys would become readable by everybody and rsync would fail on ACLs.
-cache_fs_ok() {
-    local t
-    t=$(findmnt -no FSTYPE -T "$CACHE_BASE_DIR" 2>/dev/null | head -n 1)
-    case "$t" in
-        vfat|msdos|exfat|ntfs|ntfs3|fuseblk|iso9660|udf) return 1 ;;
-    esac
-    return 0
-}
-
-# A first full backup needs room for the whole system (+5%).
-free_space_ok() {
-    local need avail
-    need=$(df --output=used -B1 / 2>/dev/null | tail -n 1 | tr -d ' ')
-    avail=$(df --output=avail -B1 "$CACHE_BASE_DIR" 2>/dev/null | tail -n 1 | tr -d ' ')
-    [[ "$need" =~ ^[0-9]+$ && "$avail" =~ ^[0-9]+$ ]] || return 0
-    [ "$avail" -ge $(( need + need / 20 )) ]
-}
-
-# A restore source must be a complete system of this distribution.
-verify_restore_source() {
-    local src="$1" id
-    [ -d "$src" ] && [ ! -L "$src" ] || return 1
-    [ -f "$src/etc/os-release" ] && [ -f "$src/etc/fstab" ] && [ -d "$src/usr/bin" ] || return 1
-    id=$(sed -n 's/^ID=//p' "$src/etc/os-release" | head -n 1 | tr -d "\"'")
-    [ "$id" = "$DISTRO_ID" ]
 }
 
 # Cache and snapshot paths that "Delete cache" may remove.
@@ -1474,8 +1444,6 @@ backup_core() {
     if ! valid_dir_path "$CACHE_BASE_DIR" || [ ! -d "$CACHE_BASE_DIR" ]; then
         BACKUP_ERR="$S_SETTINGS_WARN_DIR"; return 1
     fi
-    if ! cache_fs_ok; then BACKUP_ERR="$S_ERR_FS"; return 1; fi
-    if [ ! -f "$CACHE_META" ] && ! free_space_ok; then BACKUP_ERR="$S_ERR_NO_SPACE"; return 1; fi
     [ -n "$LOG_PID" ] && progress=(--info=progress2)
 
     mode_v=$(versioning_mode)
@@ -1792,12 +1760,12 @@ restore_done_dialogs() {  # $1 = TRUE|FALSE home restored   $2 = label text
 
 do_restore() {
     read_meta
-    if [ ! -f "$CACHE_META" ] || ! verify_restore_source "$ROOTFS_CACHE"; then
+    if [ ! -f "$CACHE_META" ]; then
         error_dialog "$S_ERR_CACHE_INCOMPLETE"
         return
     fi
 
-    local OPT_RESULT RESTORE_HOME UNDERSTAND
+    local OPT_RESULT RESTORE_HOME
     mn_set "$S_BTN_CANCEL" "$S_BTN_YES_RESTORE"
     OPT_RESULT=$(yad --form \
         --title="$S_RESTORE_TITLE" \
@@ -1814,7 +1782,6 @@ $S_RESTORE_INFO_TITLE\n\
   • $S_RESTORE_INFO_SIZE:    <b>$(esc "$META_SIZE")</b>\n\n\
 $S_HOME_INCLUDE_WARN\n" \
         --field="$S_HOME_INCLUDE:":CHK "FALSE" \
-        --field="$S_UNDERSTAND_RESTORE:":CHK "FALSE" \
         --button="${MNB[0]}" \
         --button="${MNB[1]}" \
         --buttons-layout=spread \
@@ -1822,8 +1789,6 @@ $S_HOME_INCLUDE_WARN\n" \
     [ $? -ne 0 ] && return
 
     RESTORE_HOME=$(cut -d'|' -f1 <<< "$OPT_RESULT")
-    UNDERSTAND=$(cut -d'|' -f2 <<< "$OPT_RESULT")
-    if [ "$UNDERSTAND" != "TRUE" ]; then error_dialog "$S_ERR_UNDERSTAND"; return; fi
     [ "$RESTORE_HOME" = "TRUE" ] || RESTORE_HOME="FALSE"
     # --delete would erase every home directory if the backup never held them.
     if [ "$RESTORE_HOME" = "TRUE" ] && [ "$META_HOME" != "TRUE" ]; then
@@ -1930,25 +1895,22 @@ do_restore_snapshot() {
     for line in "${snap_lines[@]}"; do
         [ "${line#*|}" = "$SNAP_PATH" ] && known=1
     done
-    if [ "$known" -ne 1 ] || ! verify_restore_source "$SNAP_PATH"; then
+    if [ "$known" -ne 1 ]; then
         error_dialog "$S_ERR_CACHE_INCOMPLETE"
         return
     fi
 
-    local CONFIRM UNDERSTAND
+    local CONFIRM
     mn_set "$S_BTN_CANCEL" "$S_BTN_YES_RESTORE"
     CONFIRM=$(yad --form \
         --title="$S_SNAP_SELECT_TITLE" \
         ${LOGO:+--window-icon="$LOGO"} \
         --separator="|" \
         --text="$S_RESTORE_WARN_TEXT\n\n<b>Snapshot:</b> $(esc "$(basename "$SNAP_PATH")")\n\n$S_RESTORE_CONFIRM\n" \
-        --field="$S_UNDERSTAND_RESTORE:":CHK "FALSE" \
         --button="${MNB[0]}" \
         --button="${MNB[1]}" \
         --width=460 --height=240 --center 2>/dev/null)
     [ $? -ne 0 ] && return
-    UNDERSTAND=$(cut -d'|' -f1 <<< "$CONFIRM")
-    if [ "$UNDERSTAND" != "TRUE" ]; then error_dialog "$S_ERR_UNDERSTAND"; return; fi
     if ! acquire_lock; then error_dialog "$S_ERR_BUSY"; return; fi
 
     open_log_window
@@ -2091,7 +2053,7 @@ delete_cache_tree() {
 
 do_delete_cache() {
     read_meta
-    local RES UNDERSTAND
+    local RES
     mn_set "$S_BTN_CANCEL" "$S_BTN_DELETE_CONFIRM"
     RES=$(yad --form \
         --title="$S_DELETE_TITLE" \
@@ -2102,13 +2064,10 @@ do_delete_cache() {
 <b>$S_DELETE_SIZE:</b> $(esc "$META_SIZE")\n\
 <b>$S_DELETE_PATH:</b> $(esc "$ROOTFS_CACHE")\n\n\
 $S_DELETE_WARN\n" \
-        --field="$S_UNDERSTAND_DELETE:":CHK "FALSE" \
         --button="${MNB[0]}" \
         --button="${MNB[1]}" \
         --buttons-layout=spread --width=440 --height=280 --center 2>/dev/null)
     [ $? -ne 0 ] && return
-    UNDERSTAND=$(cut -d'|' -f1 <<< "$RES")
-    if [ "$UNDERSTAND" != "TRUE" ]; then error_dialog "$S_ERR_UNDERSTAND"; return; fi
     if ! acquire_lock; then error_dialog "$S_ERR_BUSY"; return; fi
 
     if delete_cache_tree; then
@@ -2130,7 +2089,7 @@ $S_DELETE_WARN\n" \
 # SETTINGS
 ############################################################
 do_settings() {
-    local CURRENT_DIR="${CACHE_BASE_DIR:-/mnt}" NEW_DIR ADV_RESULT NEW_MAX_SNAPS OLD_DIR
+    local CURRENT_DIR="${CACHE_BASE_DIR:-/mnt}" NEW_DIR ADV_RESULT NEW_MAX_SNAPS
 
     mn_set "$S_BTN_CANCEL" "$S_BTN_SAVE"
     NEW_DIR=$(yad --file-selection --directory \
@@ -2153,14 +2112,6 @@ do_settings() {
             --button="${MNB[0]}" --width=380 --center 2>/dev/null
         return
     fi
-    OLD_DIR="$CACHE_BASE_DIR"
-    CACHE_BASE_DIR="$NEW_DIR"
-    if ! cache_fs_ok; then
-        CACHE_BASE_DIR="$OLD_DIR"
-        error_dialog "$S_ERR_FS"
-        return
-    fi
-    CACHE_BASE_DIR="$OLD_DIR"
 
     mn_set "$S_BTN_CANCEL" "$S_BTN_SAVE"
     ADV_RESULT=$(yad --form \
